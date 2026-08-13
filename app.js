@@ -13,7 +13,7 @@ if (!DEMO && window.supabase) sb = window.supabase.createClient(CFG.SUPABASE_URL
 });
 
 const state = { email:null, role:"viewer", mode:"view", view:"browse",
-                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false };
+                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
@@ -200,7 +200,8 @@ function itemHay(it){
 }
 function visibleItems(){
   // viewer: only published, active-only unless "show inactive"; maker: everything
-  let list = making() ? state.items : state.items.filter(it=>it.hasPub && (state.showInactive || it.active));
+  let list = making() ? (state.draftsOnly ? state.items.filter(it=>it.hasDraft) : state.items)
+                      : state.items.filter(it=>it.hasPub && (state.showInactive || it.active));
   const q=lc(state.q);
   if(q) list=list.filter(it=>itemHay(it).includes(q));
   return list;
@@ -226,7 +227,8 @@ function renderBrowse(a){
   a.innerHTML = `
     <div class="bar">
       <input type="search" id="q" placeholder="Search name, JDE, plan #, or any field (e.g. H006)…" value="${esc(state.q)}">
-      ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>`
+      ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>
+                  <label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="draftsOnly" ${state.draftsOnly?"checked":""}> Drafts only</label>`
                 :`<label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="showInactive" ${state.showInactive?"checked":""}> Show inactive</label>`}
       <span class="hint">${items.length} ${items.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
     </div>
@@ -236,8 +238,10 @@ function renderBrowse(a){
     </div>`;
   $("q").addEventListener("input",e=>{ state.q=e.target.value; const l=$("list"); const its=visibleItems();
     l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; });
-  if(making()) $("newComm").onclick=newCommunity;
-  else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; };
+  const repaintList=()=>{ const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; };
+  if(making()){ $("newComm").onclick=newCommunity;
+    if($("draftsOnly")) $("draftsOnly").onclick=e=>{ state.draftsOnly=e.target.checked; repaintList(); }; }
+  else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; repaintList(); };
   wireRows();
   if(state.sel && items.some(it=>it.id===state.sel)) openDetail(state.sel);
 }
@@ -612,9 +616,6 @@ function renderAdd(a){
     <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
     <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
     <div id="clPreview"></div>
-    <div class="note" style="margin-top:14px"><b>One-off:</b> New Community Presentation import. Drop the prepared <b>deck_bundle.json</b> — it creates new communities (deck info + site map) and attaches site maps to existing ones. Preview &amp; assign each before applying.</div>
-    <div class="drop" id="dropDeck"><b>Drop deck_bundle.json here</b><div class="hint">or click to browse — preview + assign targets before applying</div><input type="file" id="fileDeck" accept=".json,application/json" hidden></div>
-    <div id="deckPreview"></div>
     <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
     <div class="log" id="log"></div>`;
   const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
@@ -630,12 +631,6 @@ function renderAdd(a){
   ["dragleave","drop"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.remove("hot");}));
   dropC.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importChecklist(f,logln); });
   fileC.onchange=()=>{ if(fileC.files[0]) importChecklist(fileC.files[0],logln); };
-  const dropD=$("dropDeck"), fileD=$("fileDeck");
-  dropD.onclick=()=>fileD.click();
-  ["dragover","dragenter"].forEach(ev=>dropD.addEventListener(ev,e=>{e.preventDefault();dropD.classList.add("hot");}));
-  ["dragleave","drop"].forEach(ev=>dropD.addEventListener(ev,e=>{e.preventDefault();dropD.classList.remove("hot");}));
-  dropD.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.json$/i.test(f.name)); if(f) importDeck(f,logln); });
-  fileD.onchange=()=>{ if(fileD.files[0]) importDeck(fileD.files[0],logln); };
   $("pubAll").onclick=()=>publishAllDrafts(logln);
 }
 
@@ -718,68 +713,6 @@ async function applyChecklist(){
   _clPv=null; await loadAll(); updateCounts();
 }
 
-/* ---- ONE-OFF: New Community Presentation import (prepared bundle → drafts + site maps) ---- */
-let _deck=null, _deckLog=null;
-function deckBase(n){ n=String(n||""); n=n.replace(/\(.*?\)/g,""); n=n.replace(/\b(PH|POD|CCN\w*|NEIGHBORHOOD|AMENITY|EXHIBIT|LOT|LENNAR|FKA).*$/i,""); return n.trim(); }
-async function importDeck(file, logln){
-  logln("Reading "+file.name+"…");
-  let js; try{ js=JSON.parse(await file.text()); }catch(e){ logln("Not valid JSON: "+(e.message||e),"err"); return; }
-  const comms=(js.communities||[]).slice();
-  comms.forEach(c=>{ const base=lc(deckBase(c.name));
-    let m=null;
-    if(base){ m=state.items.find(it=>lc(it.name).startsWith(base)) || state.items.find(it=>base.startsWith(lc(it.name.split(/\s+/)[0]))&&lc(it.name.split(/\s+/)[0]).length>3); }
-    c.target=m?m.id:"__new__"; c.newName=c.name; c.skip=false;
-  });
-  _deck=comms; _deckLog=logln; renderDeckPreview();
-  logln(`Deck parsed: ${comms.length} site maps. Review targets, then Apply.`,"ok");
-}
-function renderDeckPreview(){
-  const el=$("deckPreview"); if(!el||!_deck) return;
-  const opts=state.items.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-  const todo=_deck.filter(c=>!c.skip).length;
-  let h=`<div class="panel" style="margin-top:12px"><div class="sec"><span>Deck import — ${todo} site maps (${_deck.filter(c=>!c.skip&&c.target==="__new__").length} new communities)</span>${todo?`<button class="btn mini solid" id="deckApplyBtn">Import ${todo}</button>`:""}</div>
-    <table><tr><th>Slide</th><th>Map</th><th>Target community</th></tr>`;
-  _deck.forEach((c,i)=>{ h+=`<tr${c.skip?' style="opacity:.5"':''}>
-    <td><b>${esc(c.name)}</b><div class="hint">${esc(c.hub)}${c.city?" · "+esc(c.city):""}</div></td>
-    <td><img src="data:image/jpeg;base64,${c.img}" style="height:48px;border:1px solid var(--line);border-radius:4px" alt=""></td>
-    <td><select data-dt="${i}"><option value="__new__"${c.target==="__new__"?" selected":""}>+ Create new community</option>${opts.map(it=>`<option value="${it.id}"${c.target===it.id?" selected":""}>${esc(it.name)}</option>`).join("")}</select>
-      ${c.target==="__new__"?`<input type="text" data-dn="${i}" value="${esc(c.newName)}" style="width:100%;margin-top:4px" placeholder="New community name">`:""}
-      <label class="hint" style="display:block;margin-top:3px"><input type="checkbox" data-dskip="${i}"${c.skip?" checked":""}> skip this map</label></td></tr>`; });
-  h+=`</table></div>`;
-  el.innerHTML=h;
-  el.querySelectorAll("[data-dt]").forEach(s=>s.onchange=()=>{ _deck[+s.dataset.dt].target=s.value; renderDeckPreview(); });
-  el.querySelectorAll("[data-dn]").forEach(inp=>inp.oninput=()=>{ _deck[+inp.dataset.dn].newName=inp.value; });
-  el.querySelectorAll("[data-dskip]").forEach(cb=>cb.onchange=()=>{ _deck[+cb.dataset.dskip].skip=cb.checked; renderDeckPreview(); });
-  if($("deckApplyBtn")) $("deckApplyBtn").onclick=()=>applyDeck();
-}
-function b64toBlob(b64, type){ const bin=atob(b64), n=bin.length, arr=new Uint8Array(n); for(let i=0;i<n;i++) arr[i]=bin.charCodeAt(i); return new Blob([arr],{type}); }
-async function applyDeck(){
-  if(!_deck) return; const todo=_deck.filter(c=>!c.skip);
-  if(!(await uiConfirm(`Import ${todo.length} site maps? New communities are created as drafts (deck info in notes); maps attach to the chosen community.`,{title:"Import presentation",okText:"Import"}))) return;
-  let ok=0, madeNew=0;
-  for(const c of todo){
-    try{
-      let cid=c.target, publishImg=false;
-      if(cid==="__new__"){
-        cid=uid(); const nm=(c.newName||c.name).trim();
-        const data={ f:{}, plans:[], note:"", extra:{} };
-        data.f[SCHEMA.IDENTITY.name]=nm; if(c.city) data.f.municipality=c.city;
-        data.note=`New Community Presentation (8.12.26) — Hub: ${c.hub||""}\n${c.text||""}`;
-        const payload={ community_id:cid, division:"orlando", status:"draft", source:"manual",
-          name:nm, jde:null, project_name:nm, hub:null, needs_review:true, data,
-          updated_at:new Date().toISOString(), updated_by:state.email };
-        const { error }=await sb.from("cdb_cis").upsert(payload,{onConflict:"community_id,status"}); if(error) throw error;
-        madeNew++;
-      } else { const it=itemById(cid); publishImg=!!(it&&it.hasPub); }   // existing published → show the map to viewers now
-      const blob=b64toBlob(c.img,"image/jpeg"); const path=`${cid}/${uid()}.jpg`;
-      const { error:e1 }=await sb.storage.from(CFG.IMAGE_BUCKET).upload(path,blob,{contentType:"image/jpeg",upsert:false}); if(e1) throw e1;
-      const { error:e2 }=await sb.from("cdb_images").insert({ community_id:cid, path, caption:`Site map — ${c.name}`, sort_order:0, published:publishImg, w:c.w, h:c.h, created_by:state.email }); if(e2) throw e2;
-      ok++; if(_deckLog) _deckLog(`✓ ${c.name}${c.target==="__new__"?" (new)":""}`,"ok");
-    }catch(e){ if(_deckLog) _deckLog(`✗ ${c.name}: ${e.message||e}`,"err"); }
-  }
-  if($("deckPreview")) $("deckPreview").innerHTML=`<div class="note ok" style="margin-top:12px">Imported ${ok} site maps; created ${madeNew} new community drafts. Review the new communities and Publish.</div>`;
-  _deck=null; await loadAll(); render();
-}
 
 /* Some sheets cram elevations + New Plan into the Plan Name cell, e.g.
    "Annapolis - (30' x 65') H, J, K No", leaving the Elevations/New Plan columns
