@@ -57,6 +57,7 @@ create table if not exists public.cdb_cis (
   source        text not null default 'manual' check (source in ('CIS','DECK','manual')),
   model_start   date,
   needs_review  boolean not null default false,
+  active        boolean not null default true,        -- inactive = hidden from viewers by default
   data          jsonb  not null default '{}'::jsonb,  -- all section field values
   updated_at    timestamptz not null default now(),
   updated_by    text,
@@ -174,13 +175,13 @@ declare d public.cdb_cis; v_rev text; v_data jsonb; begin
 
   insert into public.cdb_cis
         (community_id, division, status, name, jde, project_name, hub, source,
-         model_start, needs_review, data, updated_at, updated_by, published_at)
+         model_start, needs_review, active, data, updated_at, updated_by, published_at)
   values (d.community_id, d.division, 'published', d.name, d.jde, d.project_name, d.hub, d.source,
-         d.model_start, false, v_data, now(), public.cdb_email(), now())
+         d.model_start, false, d.active, v_data, now(), public.cdb_email(), now())
   on conflict (community_id, status) do update set
         division=excluded.division, name=excluded.name, jde=excluded.jde,
         project_name=excluded.project_name, hub=excluded.hub, source=excluded.source,
-        model_start=excluded.model_start, needs_review=false, data=excluded.data,
+        model_start=excluded.model_start, needs_review=false, active=excluded.active, data=excluded.data,
         updated_at=now(), updated_by=public.cdb_email(), published_at=now();
 
   insert into public.cdb_cis_revisions (community_id, name, jde, data, published_by)

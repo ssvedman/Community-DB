@@ -79,6 +79,7 @@ input[type=search]{min-width:300px;background:#fffbe6;border-color:var(--amberli
 .pill.draft{background:var(--amber);border-color:var(--amberline);color:#7a5b00}
 .pill.pub{background:var(--greenbg);border-color:#a8d5bd;color:var(--green)}
 .pill.ed{background:var(--editbg);border-color:#c3aeea;color:var(--edit)}
+.pill.off{background:#eef1f5;border-color:#c9d2de;color:#6b7794}
 .split{display:grid;grid-template-columns:360px 1fr;gap:16px;align-items:start}
 @media(max-width:880px){.split{grid-template-columns:1fr}}
 .list{border:1px solid var(--line);border-radius:10px;max-height:74vh;overflow:auto;background:var(--card)}
@@ -98,6 +99,10 @@ td,th{border-bottom:1px solid var(--line);padding:6px 14px;vertical-align:top;te
 th{background:var(--grey);font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--mute)}
 td.k{width:230px;background:var(--grey);font-weight:600;font-size:12.5px}
 td.v{white-space:pre-wrap}
+th.nowrap{white-space:nowrap}
+.plname{display:inline-block;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;cursor:pointer;border-bottom:1px dashed #c7cfdd}
+.plname:hover{background:var(--editbg);border-bottom-color:var(--edit)}
+.autotag{display:inline-block;margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--mute);background:var(--grey);border:1px solid var(--line);border-radius:5px;padding:0 5px;vertical-align:middle}
 .caveat{background:var(--amber)}
 .ms-l{color:var(--red);font-weight:700}
 

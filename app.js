@@ -15,7 +15,7 @@ if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const state = { email:null, role:"viewer", mode:"view", view:"browse",
-                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"" };
+                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
@@ -57,6 +57,12 @@ function uiPrompt(label,opts){ opts=opts||{};
     body:`<label class="fld">${esc(label)}</label><input type="text" class="modal-input" placeholder="${esc(opts.placeholder||"")}" value="${esc(opts.value||"")}">`,
     buttons:[{label:opts.cancelText||"Cancel",value:null},
              {label:opts.okText||"Save",primary:true,value:card=>{ const el=card.querySelector(".modal-input"); return el?el.value.trim():null; }}]
+  }); }
+function uiTextarea(label,value,opts){ opts=opts||{};
+  return openModal({title:opts.title||label||"Edit",
+    body:`<label class="fld">${esc(label||"")}</label><textarea class="modal-input" rows="4" style="resize:vertical">${esc(value||"")}</textarea>`,
+    buttons:[{label:opts.cancelText||"Cancel",value:null},
+             {label:opts.okText||"Save",primary:true,value:card=>{ const el=card.querySelector(".modal-input"); return el?el.value:null; }}]
   }); }
 
 /* theme */
@@ -131,10 +137,11 @@ async function enterApp(email){
   $("themeBtn").textContent=document.documentElement.getAttribute("data-theme")==="dark"?"Light":"Dark";
   if(isEditor()){ $("modeToggle").classList.remove("hidden"); }
   if(isAdmin()) $("adminLink").classList.remove("hidden");
-  document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !isEditor()));
-  wireChrome();
+  wireChrome(); syncEditorTabs();
   await loadAll(); render();
 }
+// Gaps + Add/import live on the maker side only — hidden in Viewer mode.
+function syncEditorTabs(){ document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making())); }
 function wireChrome(){
   $("logoutBtn").onclick=logout; $("themeBtn").onclick=toggleTheme;
   $("homeLogo").onclick=()=>{ showDash(); state.view="browse"; setTab(); render(); };
@@ -142,7 +149,7 @@ function wireChrome(){
   $("modeToggle").querySelectorAll(".mode").forEach(b=>b.onclick=()=>{
     state.mode=b.dataset.mode; $("modeToggle").querySelectorAll(".mode").forEach(x=>x.classList.toggle("on",x===b));
     if(state.mode==="view" && (state.view==="gaps"||state.view==="add")){ state.view="browse"; setTab(); }
-    render();
+    syncEditorTabs(); render();
   });
   $("tabs").querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ state.view=t.dataset.view; setTab(); showDash(); render(); });
   $("lightbox").onclick=()=>$("lightbox").classList.remove("on");
@@ -163,14 +170,13 @@ async function loadAll(){
       if(r.status==="published") e.pub=r; else e.draft=r; });
     state.items=[...byComm.values()].map(e=>{
       const primary = making() ? (e.draft||e.pub) : (e.pub||e.draft);
+      const activeRow = e.pub || e.draft;
       return { id:e.community_id, pub:e.pub, draft:e.draft, primary,
         name:(primary&&primary.name)||"", jde:(primary&&primary.jde)||"",
         hub:(primary&&primary.hub)||"", source:(primary&&primary.source)||"manual",
+        active: activeRow ? activeRow.active!==false : true,
         hasPub:!!e.pub, hasDraft:!!e.draft };
     }).filter(it=> it.pub || it.draft ).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-
-    const { data:notes } = await sb.from("cdb_notes").select("*").order("note_date",{ascending:false});
-    state.notes = notes||[];
 
     const { data:imgs } = await sb.from("cdb_images").select("*").order("sort_order");
     (imgs||[]).forEach(im=>{ (state.imgs[im.community_id]=state.imgs[im.community_id]||[]).push(im); });
@@ -184,8 +190,8 @@ async function signImages(imgs){
     (data||[]).forEach(d=>{ if(d&&d.signedUrl) state.imgUrls[d.path]=d.signedUrl; }); }catch(e){}
 }
 function visibleItems(){
-  // viewer: only published; maker: everything
-  let list = making() ? state.items : state.items.filter(it=>it.hasPub);
+  // viewer: only published, active-only unless "show inactive"; maker: everything
+  let list = making() ? state.items : state.items.filter(it=>it.hasPub && (state.showInactive || it.active));
   const q=lc(state.q);
   if(q) list=list.filter(it=>lc(it.name).includes(q)||lc(it.jde).includes(q));
   return list;
@@ -196,15 +202,12 @@ function render(){
   updateCounts();
   const a=$("viewArea");
   if(state.view==="browse") return renderBrowse(a);
-  if(state.view==="notes")  return renderNotes(a);
-  if(state.view==="about")  return renderAbout(a);
   if(state.view==="gaps"  && isEditor()) return renderGaps(a);
   if(state.view==="add"   && isEditor()) return renderAdd(a);
   state.view="browse"; setTab(); renderBrowse(a);
 }
 function updateCounts(){
   $("cBrowse").textContent = visibleItems().length;
-  $("cNotes").textContent = state.notes.length;
   const g=$("cGaps"); if(g) g.textContent = isEditor()? gapRows().length : "";
 }
 
@@ -214,7 +217,8 @@ function renderBrowse(a){
   a.innerHTML = `
     <div class="bar">
       <input type="search" id="q" placeholder="Search community name or JDE number…" value="${esc(state.q)}">
-      ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>`:""}
+      ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>`
+                :`<label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="showInactive" ${state.showInactive?"checked":""}> Show inactive</label>`}
       <span class="hint">${items.length} ${items.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
     </div>
     <div class="split">
@@ -224,13 +228,14 @@ function renderBrowse(a){
   $("q").addEventListener("input",e=>{ state.q=e.target.value; const l=$("list"); const its=visibleItems();
     l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; });
   if(making()) $("newComm").onclick=newCommunity;
+  else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; };
   wireRows();
   if(state.sel && items.some(it=>it.id===state.sel)) openDetail(state.sel);
 }
 function rowHTML(it){
   const pills=[];
+  if(!it.active) pills.push(`<span class="pill off">Inactive</span>`);
   if(it.source==="DECK") pills.push(`<span class="pill deck">Deck</span>`);
-  else if(it.source==="CIS") pills.push(`<span class="pill cis">CIS</span>`);
   if(making()){ if(it.hasDraft) pills.push(`<span class="pill draft">Draft</span>`);
     if(it.hasPub) pills.push(`<span class="pill pub">Published</span>`); }
   return `<div class="row ${state.sel===it.id?"sel":""}" data-id="${it.id}">
@@ -248,20 +253,25 @@ function openDetail(id){
   const row=shownRow(it); const d=row?row.data||{}:{};
   const editing = making();
   const acts=[];
-  acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; .xlsx</button>`);
-  acts.push(`<button class="btn mini ghost" id="btnExportPdf">&#8681; PDF</button>`);
+  if(!editing){   // exports only on the viewer side
+    acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; .xlsx</button>`);
+    acts.push(`<button class="btn mini ghost" id="btnExportPdf">&#8681; PDF</button>`);
+  }
   if(editing){
     if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish</button>`);
       acts.push(`<button class="btn mini ghost" id="btnDiscard">Discard draft</button>`); }
     else if(it.hasPub){ acts.push(`<button class="btn mini" id="btnEdit">Edit</button>`); }
+    acts.push(`<button class="btn mini ghost" id="btnActive">${it.active?"Set inactive":"Set active"}</button>`);
     if(it.hasPub) acts.push(`<button class="btn mini ghost" id="btnUnpublish">Unpublish</button>`);
     acts.push(`<button class="btn mini danger" id="btnDelete">Delete</button>`);
   }
-  const statusLine = editing
+  const inactivePill = it.active ? "" : ` <span class="pill off">Inactive</span>`;
+  const statusLine = (editing
     ? (it.hasDraft?`<span class="pill draft">Editing draft</span>`:"")+(it.hasPub?` <span class="pill pub">Live version published</span>`:` <span class="pill draft">Not yet published</span>`)
-    : `<span class="pill pub">Published</span>`;
+    : `<span class="pill pub">Published</span>`) + inactivePill;
 
-  let h=`<div class="ptitle"><div>${esc(row?row.name:"")||"(untitled)"}
+  const heading = (fval(d,"project_name") || (row&&row.name) || "").trim() || "(untitled)";
+  let h=`<div class="ptitle"><div>${esc(heading)}
       <span class="s">${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}</span></div>
       <div class="acts">${acts.join("")}</div></div>`;
 
@@ -269,18 +279,15 @@ function openDetail(id){
   // images
   h+=`<div class="sec"><span>Images</span>${editing?`<button data-imgadd>Add image</button>`:""}</div>`;
   h+=imagesHTML(id, editing);
-  // tagged notes
-  const tn=state.notes.filter(n=>n.community_id===id);
-  if(tn.length){ h+=`<div class="sec"><span>Meeting notes</span></div><table>`+
-    tn.map(n=>`<tr><td class="k">${esc(n.note_date||"")}<div class="hint">${esc(n.subject||"")}</div></td><td class="v">${esc(n.body||"")}${n.attendees?`<div class="hint">Attendees: ${esc(n.attendees)}</div>`:""}</td></tr>`).join("")+`</table>`; }
-
   $("detail").innerHTML=h;
+  wirePlanNames(id, editing);
   if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
   if($("btnExportPdf")) $("btnExportPdf").onclick=()=>exportCISpdf(id);
   if(editing){
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
     if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
     if($("btnEdit"))    $("btnEdit").onclick=()=>startDraft(id);
+    if($("btnActive")) $("btnActive").onclick=()=>setActive(id, !(itemById(id).active));
     if($("btnUnpublish")) $("btnUnpublish").onclick=()=>unpublish(id);
     if($("btnDelete"))  $("btnDelete").onclick=()=>deleteCommunity(id);
     wireEditables(id);
@@ -298,8 +305,9 @@ function evCell(id,path,v){ // editable value span
 }
 function renderSection(sec, d, editing, id){
   if(sec.kind==="kv"){
-    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!editing && !v) return "";
-      const disp = editing ? evCell(id,"f."+f.k,v) : esc(v);
+    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly)) return "";
+      const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v)
+                 : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>` : esc(v));
       return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td></tr>`; }).join("");
     const ex=(d.extra&&d.extra[sec.id])||[];
     ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td></tr>`; });
@@ -309,8 +317,12 @@ function renderSection(sec, d, editing, id){
   if(sec.kind==="plans"){
     const arr=Array.isArray(d.plans)?d.plans:[]; const cols=SCHEMA.PLAN_COLS;
     if(!arr.length && !editing) return "";
-    let head=`<tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
-    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>`<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,r[ci]||""):esc(r[ci]||"")}</td>`).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
+    let head=`<tr>${cols.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+    const cell=(ri,ci,raw)=>{ const v=raw||"";
+      if(ci===1){ // Plan Name / footprint: truncated label, click opens a popup (view or edit)
+        return `<td class="v"><span class="plname" data-planopen="${ri}" data-full="${esc(v)}">${v?esc(v):'<span class="none">—</span>'}</span></td>`; }
+      return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
+    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
     return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><table>${head}${body}</table>`;
   }
   if(sec.kind==="note"){
@@ -326,6 +338,15 @@ function wireEditables(id){
   $("detail").querySelectorAll(".ev").forEach(sp=>sp.onclick=()=>beginEdit(sp,id));
   const add=$("detail").querySelector("[data-pladd]"); if(add) add.onclick=()=>plAdd(id);
   $("detail").querySelectorAll("[data-pldel]").forEach(b=>b.onclick=()=>plDel(id,+b.dataset.pldel));
+}
+// Plan Name / footprint popup — read-only in viewer, editable textarea in maker.
+function wirePlanNames(id, editing){
+  $("detail").querySelectorAll("[data-planopen]").forEach(sp=>sp.onclick=async()=>{
+    const ri=+sp.dataset.planopen; const cur=sp.dataset.full||"";
+    if(editing){ const v=await uiTextarea("Plan name / footprint", cur, {okText:"Save"});
+      if(v!=null){ await setPath(id,`p.${ri}.1`,v); openDetail(id); } }
+    else { uiAlert(cur||"—","Plan name / footprint"); }
+  });
 }
 function beginEdit(sp,id){
   const path=sp.dataset.ev; const cur=getPath(id,path);
@@ -454,6 +475,12 @@ async function discardDraft(id){
   if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
   await sb.from("cdb_cis").delete().eq("community_id",id).eq("status","draft"); await loadAll(); render();
   const still=itemById(id); if(still) openDetail(id); }
+async function setActive(id, active){
+  if(!active && !(await uiConfirm("Set this community inactive? It will be hidden from viewers by default (they can opt to show inactive).",{title:"Set inactive",okText:"Set inactive"}))) return;
+  const { error } = await sb.from("cdb_cis").update({active}).eq("community_id",id);
+  if(error){ uiAlert("Couldn't update: "+error.message,"Error"); return; }
+  await loadAll(); render(); if(itemById(id)) openDetail(id);
+}
 async function unpublish(id){
   if(!(await uiConfirm("Unpublish this community? It will be hidden from viewers and returned to a draft. You can publish it again later.",
       {title:"Unpublish community",okText:"Unpublish",danger:true}))) return;
@@ -521,46 +548,13 @@ async function delImage(id,imgId){ if(!(await uiConfirm("Delete this image?",{ti
   if(im){ try{ await sb.storage.from(CFG.IMAGE_BUCKET).remove([im.path]); }catch(e){} }
   await sb.from("cdb_images").delete().eq("id",imgId); await loadAll(); openDetail(id); }
 
-/* ---------------- NOTES ---------------- */
-function renderNotes(a){
-  const canAdd=isEditor();
-  const opts=state.items.map(it=>`<option value="${it.id}">${esc(it.name||it.jde||"—")}</option>`).join("");
-  a.innerHTML=`
-    ${canAdd?`<div class="panel" style="margin-bottom:16px"><div class="sec"><span>New meeting note</span></div><table>
-      <tr><td class="k">Date</td><td class="v"><input type="date" id="nDate"></td></tr>
-      <tr><td class="k">Subject</td><td class="v"><input type="text" id="nTitle" placeholder="e.g. CIS review, panel updates" style="width:100%;max-width:520px"></td></tr>
-      <tr><td class="k">Community <span class="hint">(optional)</span></td><td class="v"><select id="nComm" style="max-width:520px"><option value="">— none —</option>${opts}</select></td></tr>
-      <tr><td class="k">Attendees <span class="hint">(optional)</span></td><td class="v"><input type="text" id="nWho" style="width:100%;max-width:520px"></td></tr>
-      <tr><td class="k">Notes</td><td class="v"><textarea id="nBody" class="ed-in" placeholder="What was decided, what changed, follow-ups…"></textarea></td></tr>
-      <tr><td class="k"></td><td class="v"><button class="btn mini solid" id="nAdd">Save note</button> <span class="hint" id="nMsg"></span></td></tr>
-    </table></div>`:""}
-    <div class="bar"><input type="search" id="nq" placeholder="Search notes…"><select id="nFilter"><option value="">All communities</option>${opts}</select></div>
-    <div class="panel"><div id="noteList"></div></div>`;
-  const nameOf=id=>{ const it=itemById(id); return it?(it.name||it.jde||"—"):""; };
-  const paint=()=>{ const q=lc($("nq").value), f=$("nFilter").value;
-    let ns=state.notes.filter(n=>(!f||n.community_id===f)&&(!q||[n.subject,n.body,n.attendees,nameOf(n.community_id),n.note_date].some(x=>lc(x).includes(q))));
-    $("noteList").innerHTML= ns.length? `<table>`+ns.map(n=>`<tr><td class="k">${esc(n.note_date||"")}<div class="hint">${esc(n.subject||"")}</div>${n.community_id?`<div class="pill cis" style="margin-top:4px">${esc(nameOf(n.community_id))}</div>`:""}</td><td class="v">${esc(n.body||"")}${n.attendees?`<div class="hint">Attendees: ${esc(n.attendees)}</div>`:""}${isEditor()?`<div><button class="rowdel" data-ndel="${n.id}">Delete</button></div>`:""}</td></tr>`).join("")+`</table>` : `<div class="empty">No notes.</div>`;
-    $("noteList").querySelectorAll("[data-ndel]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Delete this note?",{title:"Delete note",okText:"Delete",danger:true})){ await sb.from("cdb_notes").delete().eq("id",b.dataset.ndel); await loadAll(); paint(); updateCounts(); } });
-  };
-  $("nq").addEventListener("input",paint); $("nFilter").addEventListener("change",paint); paint();
-  if(canAdd) $("nAdd").onclick=async()=>{
-    const rec={ id:uid(), division:"orlando", note_date:$("nDate").value||null, subject:$("nTitle").value.trim()||null,
-      community_id:$("nComm").value||null, attendees:$("nWho").value.trim()||null, body:$("nBody").value.trim()||null, created_by:state.email };
-    if(!rec.body){ $("nMsg").textContent="Add some note text."; return; }
-    const { error }=await sb.from("cdb_notes").insert(rec);
-    if(error){ $("nMsg").textContent="Save failed: "+error.message; return; }
-    $("nBody").value=""; $("nTitle").value=""; $("nWho").value=""; $("nMsg").textContent="Saved.";
-    await loadAll(); paint(); updateCounts();
-  };
-}
-
 /* ---------------- GAPS (editor) ---------------- */
 function isGap(v){ const s=lc(v).trim(); return !s || s==="tbd" || s==="tbd in source"; }
 function gapRows(){
   const rows=[];
   state.items.forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
     SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
-      sec.fields.forEach(fl=>{ if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
+      sec.fields.forEach(fl=>{ if(fl.readonly) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
   });
   return rows;
@@ -584,6 +578,9 @@ function renderAdd(a){
   a.innerHTML=`<div class="note"><b>Import the CIS workbook (.xlsx)</b> — one community per sheet — to create/update drafts, or drop CIS <b>PDF(s)</b> for best-effort extraction. Imported communities land as drafts; review them, then Publish (or use "Publish all drafts").</div>
     <div class="drop" id="dropXls"><b>Drop the Community Information Sheets .xlsx here</b><div class="hint">or click to browse — every community sheet becomes a draft</div><input type="file" id="fileXls" accept=".xlsx,.xlsm" hidden></div>
     <div class="drop" id="drop" style="margin-top:10px"><b>Drop CIS PDF(s) here</b><div class="hint">or click to browse (best-effort)</div><input type="file" id="file" accept="application/pdf" multiple hidden></div>
+    <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
+    <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
+    <div id="clPreview"></div>
     <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
     <div class="log" id="log"></div>`;
   const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
@@ -599,7 +596,74 @@ function renderAdd(a){
   ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hot");}));
   drop.addEventListener("drop",e=>{ const fs=[...(e.dataTransfer.files||[])].filter(f=>/\.pdf$/i.test(f.name)); if(fs.length) importPdfs(fs,logln); });
   file.onchange=()=>{ if(file.files.length) importPdfs([...file.files],logln); };
+  const dropC=$("dropChk"), fileC=$("fileChk");
+  dropC.onclick=()=>fileC.click();
+  ["dragover","dragenter"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.add("hot");}));
+  ["dragleave","drop"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.remove("hot");}));
+  dropC.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importChecklist(f,logln); });
+  fileC.onchange=()=>{ if(fileC.files[0]) importChecklist(fileC.files[0],logln); };
   $("pubAll").onclick=()=>publishAllDrafts(logln);
+}
+
+/* ---- trench-date update from the New Community Checklist (preview → apply) ---- */
+function clDate(d){ return (d instanceof Date && !isNaN(d)) ? `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}` : ""; }
+function parseChecklist(wb){
+  const ws=wb.Sheets["Summary"]; if(!ws) return {rows:[],unmatched:[]};
+  const aoa=XLSX.utils.sheet_to_json(ws,{header:1,cellDates:true,defval:null});
+  const hr=aoa.findIndex(r=>Array.isArray(r)&&r.some(c=>typeof c==="string"&&c.trim().toLowerCase()==="community"));
+  if(hr<0) return {rows:[],unmatched:[]};
+  const hdr=aoa[hr];
+  const ciComm=hdr.findIndex(c=>typeof c==="string"&&c.trim().toLowerCase()==="community");
+  const ciMs=hdr.findIndex(c=>typeof c==="string"&&c.trim().toLowerCase()==="model start"); // first exact = current
+  if(ciComm<0||ciMs<0) return {rows:[],unmatched:[]};
+  const list=[];
+  for(let r=hr+1;r<aoa.length;r++){ const row=aoa[r]||[]; let comm=row[ciComm], ms=row[ciMs];
+    if(typeof comm!=="string") continue; comm=comm.trim();
+    if(!comm || /hub$/i.test(comm)) continue;
+    if(!(ms instanceof Date) || ms.getFullYear()<2000) continue;   // skip blanks / 1899 epoch
+    list.push({comm, date:ms});
+  }
+  const rows=[], unmatched=[];
+  list.forEach(x=>{ const dateStr=clDate(x.date);
+    const matches=state.items.filter(it=>lc(it.name).startsWith(lc(x.comm)))
+      .map(it=>{ const base=it.draft||it.pub; return {id:it.id, name:it.name, cur:(base&&base.data&&base.data.f&&base.data.f.trench_date)||""}; });
+    if(matches.length) rows.push({comm:x.comm, dateStr, matches}); else unmatched.push({comm:x.comm, dateStr});
+  });
+  return {rows,unmatched};
+}
+let _clApply=[];
+async function importChecklist(file, logln){
+  if(!window.XLSX){ logln("Spreadsheet library not loaded.","err"); return; }
+  logln("Reading "+file.name+"…");
+  let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellDates:true}); }catch(e){ logln("Couldn't read: "+(e.message||e),"err"); return; }
+  const pv=parseChecklist(wb);
+  _clApply=[]; pv.rows.forEach(r=>r.matches.forEach(m=>_clApply.push({id:m.id, dateStr:r.dateStr})));
+  const el=$("clPreview");
+  let h=`<div class="panel" style="margin-top:12px"><div class="sec"><span>Trench-date preview — ${_clApply.length} CIS across ${pv.rows.length} communities</span>${_clApply.length?`<button class="btn mini solid" id="clApplyBtn">Apply to ${_clApply.length} CIS as drafts</button>`:""}</div>`;
+  if(pv.rows.length){ h+=`<table><tr><th>Checklist community</th><th>New trench (Model Start)</th><th>CIS updated</th></tr>`+
+    pv.rows.map(r=>`<tr><td>${esc(r.comm)}</td><td>${esc(r.dateStr)}</td><td>${r.matches.map(m=>`${esc(m.name)}${m.cur?` <span class="hint">(was ${esc(m.cur)})</span>`:""}`).join("<br>")}</td></tr>`).join("")+`</table>`; }
+  else h+=`<div class="empty">No checklist communities matched a CIS by name.</div>`;
+  if(pv.unmatched.length){ h+=`<div class="sec"><span>No CIS match — skipped (${pv.unmatched.length})</span></div><table>`+
+    pv.unmatched.map(u=>`<tr><td>${esc(u.comm)}</td><td>${esc(u.dateStr)}</td></tr>`).join("")+`</table>`; }
+  h+=`</div>`;
+  el.innerHTML=h;
+  if($("clApplyBtn")) $("clApplyBtn").onclick=()=>applyChecklist(logln);
+  logln(`Checklist parsed: ${pv.rows.length} matched, ${pv.unmatched.length} unmatched. Review the preview, then Apply.`,"ok");
+}
+async function applyChecklist(logln){
+  if(!_clApply.length) return;
+  if(!(await uiConfirm(`Apply revised trench dates to ${_clApply.length} CIS as drafts? Review and Publish afterward.`,{title:"Apply trench dates",okText:"Apply"}))) return;
+  const payloads=_clApply.map(a=>{ const it=itemById(a.id); const base=it.draft||it.pub;
+    const data=JSON.parse(JSON.stringify(base.data||{})); data.f=data.f||{}; data.f.trench_date=a.dateStr;
+    return { community_id:it.id, division:"orlando", status:"draft", source:base.source||"CIS",
+      name:base.name||null, jde:base.jde||null, project_name:base.project_name||null, hub:base.hub||null,
+      needs_review:true, data, updated_at:new Date().toISOString(), updated_by:state.email }; });
+  let ok=0;
+  for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
+    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"}); if(!error) ok+=batch.length; }
+  if($("clPreview")) $("clPreview").innerHTML=`<div class="note ok" style="margin-top:12px">Updated ${ok} CIS as drafts. Use "Publish all drafts" to make them live.</div>`;
+  if(logln) logln(`Applied trench dates to ${ok} CIS (drafts).`,"ok");
+  await loadAll(); updateCounts();
 }
 
 /* Some sheets cram elevations + New Plan into the Plan Name cell, e.g.
@@ -718,17 +782,6 @@ function extractCISfields(text){
   set("base_spec",     grab(/Base Spec[:\s]+([^\n]+?)(?:Product|BuildPro|$)/i));
   set("product_type",  grab(/Product Type[:\s]+([^\n]+?)(?:Developer|$)/i));
   return f;
-}
-
-/* ---------------- ABOUT ---------------- */
-function renderAbout(a){
-  a.innerHTML=`<div class="panel"><div class="sec"><span>About Community-DB</span></div><table>
-    <tr><td class="k">What this is</td><td class="v">A single, login-gated source of truth for Orlando community information (CIS). Everyone at ${esc(CFG.ALLOWED_DOMAIN)} can view published communities; editors draft and publish.</td></tr>
-    <tr><td class="k">Viewer vs Maker</td><td class="v">Use the <b>Viewer / Maker</b> switch (top right) if you're an editor. Viewer shows only published info; Maker adds draft editing, Gaps and Add/import.</td></tr>
-    <tr><td class="k">Drafts</td><td class="v">Edits are saved to a <b>draft</b> automatically as you type. The live published version doesn't change until you press <b>Publish</b>. Editing a published community starts a fresh draft; <b>Discard draft</b> reverts to the live version.</td></tr>
-    <tr><td class="k">Images</td><td class="v">Uploads are automatically downsampled (long edge ${CFG.IMAGE_MAX_EDGE}px) to stay crisp while conserving storage.</td></tr>
-    <tr><td class="k">Access</td><td class="v">Data loads from Supabase only after sign-in; viewers can't see drafts. Contact stephen.svedman@lennar.com for access.</td></tr>
-  </table></div>`;
 }
 
 /* ---------------- ADMIN: reset link + roles ---------------- */
