@@ -5,7 +5,7 @@
    ============================================================ */
 "use strict";
 const CFG = window.APP_CONFIG;
-const SCHEMA = window.CIS_SCHEMA;
+const SCHEMA = window.CIS;
 const DEMO = !CFG.SUPABASE_URL || CFG.SUPABASE_URL.startsWith("YOUR_");
 let sb = null;
 if (!DEMO && window.supabase) sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
@@ -248,7 +248,8 @@ function openDetail(id){
   const row=shownRow(it); const d=row?row.data||{}:{};
   const editing = making();
   const acts=[];
-  acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; Export .xlsx</button>`);
+  acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; .xlsx</button>`);
+  acts.push(`<button class="btn mini ghost" id="btnExportPdf">&#8681; PDF</button>`);
   if(editing){
     if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish</button>`);
       acts.push(`<button class="btn mini ghost" id="btnDiscard">Discard draft</button>`); }
@@ -264,11 +265,7 @@ function openDetail(id){
       <span class="s">${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}</span></div>
       <div class="acts">${acts.join("")}</div></div>`;
 
-  if(editing){
-    h+=`<div class="sec"><span>Identity</span></div><table>`+
-      SCHEMA.identity.map(f=>`<tr><td class="k">${esc(f.label)}${f.required?' <span class="hint">*</span>':""}</td><td class="v">${evCell(id,f.k,val(d,f.k))}</td></tr>`).join("")+`</table>`;
-  }
-  SCHEMA.sections.forEach(sec=>{ h+=renderSection(sec, d, editing, id); });
+  SCHEMA.SECTIONS.forEach(sec=>{ h+=renderSection(sec, d, editing, id); });
   // images
   h+=`<div class="sec"><span>Images</span>${editing?`<button data-imgadd>Add image</button>`:""}</div>`;
   h+=imagesHTML(id, editing);
@@ -279,6 +276,7 @@ function openDetail(id){
 
   $("detail").innerHTML=h;
   if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
+  if($("btnExportPdf")) $("btnExportPdf").onclick=()=>exportCISpdf(id);
   if(editing){
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
     if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
@@ -293,42 +291,32 @@ function openDetail(id){
   $("detail").querySelectorAll(".card img").forEach(im=>im.onclick=()=>{ $("lbImg").src=im.src; $("lbCap").textContent=im.dataset.cap||""; $("lightbox").classList.add("on"); });
 }
 
-/* ---------- section renderers ---------- */
-function val(d,k){ const v=d[k]; return (v==null||v==="")?"":String(v); }
+/* ---------- section renderers (data model: data.f / data.plans / data.note / data.extra) ---------- */
+function fval(d,k){ const v=(d.f||{})[k]; return (v==null||v==="")?"":String(v); }
 function evCell(id,path,v){ // editable value span
   return `<span class="ev" data-ev="${esc(path)}" data-id="${id}">${v?esc(v):'<span class="none">—</span>'}</span>`;
 }
 function renderSection(sec, d, editing, id){
-  if(sec.type==="kv"){
-    let rows=sec.fields.map(f=>{ const v=val(d,f.k); if(!editing && !v) return "";
-      const disp = editing ? evCell(id,f.k,v) : (f.flag==="ms" && v ? `<span class="ms-l">${esc(v)}</span>` : esc(v));
+  if(sec.kind==="kv"){
+    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!editing && !v) return "";
+      const disp = editing ? evCell(id,"f."+f.k,v) : esc(v);
       return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td></tr>`; }).join("");
+    const ex=(d.extra&&d.extra[sec.id])||[];
+    ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td></tr>`; });
     if(!rows && !editing) return "";
     return `<div class="sec"><span>${esc(sec.title)}</span></div><table>${rows}</table>`;
   }
-  if(sec.type==="kvgroup"){
-    const g=d[sec.key]||{};
-    let rows=sec.fields.map(f=>{ const v=(g[f.k]==null?"":String(g[f.k])); if(!editing && !v) return "";
-      const disp = editing ? evCell(id,sec.key+"."+f.k,v) : esc(v);
-      return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td></tr>`; }).join("");
-    if(!rows && !editing) return "";
-    return `<div class="sec"><span>${esc(sec.title)}</span></div><table>${rows}</table>`;
-  }
-  if(sec.type==="table"){
-    const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
+  if(sec.kind==="plans"){
+    const arr=Array.isArray(d.plans)?d.plans:[]; const cols=SCHEMA.PLAN_COLS;
     if(!arr.length && !editing) return "";
-    let head=`<tr>${sec.columns.map(c=>`<th>${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
-    let body=arr.map((r,ri)=>`<tr>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`${sec.key}.${ri}.${ci}`,r[ci]||""):esc(r[ci]||"")}</td>`).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
-    return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="${sec.key}">Add row</button>`:""}</div><table>${head}${body}</table>`;
+    let head=`<tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>`<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,r[ci]||""):esc(r[ci]||"")}</td>`).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
+    return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><table>${head}${body}</table>`;
   }
-  if(sec.type==="notes"){
-    const t=val(d,sec.textKey); const an=Array.isArray(d[sec.listKey])?d[sec.listKey]:[]; const w=Array.isArray(d[sec.caveatKey])?d[sec.caveatKey]:[];
-    if(!editing && !t && !an.length && !w.length) return "";
-    let h=`<div class="sec"><span>${esc(sec.title)}</span></div><table>`;
-    h+=`<tr><td class="k">Notes</td><td class="v">${editing?evCell(id,sec.textKey,t):esc(t)||'<span class="none">—</span>'}</td></tr>`;
-    if(an.length||editing) h+=`<tr><td class="k">${esc(sec.listLabel)}</td><td class="v">${an.map(x=>esc(x)).join("<br>")||'<span class="none">—</span>'}</td></tr>`;
-    if(w.length) h+=`<tr class="caveat"><td class="k">${esc(sec.caveatLabel)}</td><td class="v">${w.map(x=>"• "+esc(x)).join("<br>")}</td></tr>`;
-    return h+`</table>`;
+  if(sec.kind==="note"){
+    const t=(d.note==null?"":String(d.note));
+    if(!editing && !t) return "";
+    return `<div class="sec"><span>${esc(sec.title)}</span></div><table><tr><td class="v">${editing?evCell(id,"note",t):(esc(t)||'<span class="none">—</span>')}</td></tr></table>`;
   }
   return "";
 }
@@ -336,12 +324,12 @@ function renderSection(sec, d, editing, id){
 /* ---------- inline editing (maker) ---------- */
 function wireEditables(id){
   $("detail").querySelectorAll(".ev").forEach(sp=>sp.onclick=()=>beginEdit(sp,id));
-  const add=$("detail").querySelector("[data-pladd]"); if(add) add.onclick=()=>plAdd(id, add.dataset.pladd);
+  const add=$("detail").querySelector("[data-pladd]"); if(add) add.onclick=()=>plAdd(id);
   $("detail").querySelectorAll("[data-pldel]").forEach(b=>b.onclick=()=>plDel(id,+b.dataset.pldel));
 }
 function beginEdit(sp,id){
   const path=sp.dataset.ev; const cur=getPath(id,path);
-  const long=(path===SCHEMA.sections.find(s=>s.type==="notes").textKey);
+  const long=(path==="note");
   const inp=document.createElement(long?"textarea":"input"); inp.className="ed-in"; inp.value=cur||"";
   sp.replaceWith(inp); inp.focus();
   const done=async(save)=>{ if(save){ await setPath(id,path,inp.value); } openDetail(id); };
@@ -349,58 +337,88 @@ function beginEdit(sp,id){
   inp.addEventListener("blur",()=>done(true));
 }
 function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; const d=(row&&row.data)||{};
-  const p=path.split(".");
-  if(p.length===1) return d[p[0]];
-  if(p.length===2) return (d[p[0]]||{})[p[1]];
-  if(p.length===3){ const arr=d[p[0]]||[]; const r=arr[+p[1]]||[]; return r[+p[2]]; }
+  const p=path.split("."); const kind=p[0];
+  if(kind==="f") return (d.f||{})[p[1]];
+  if(kind==="note") return d.note||"";
+  if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
+  if(kind==="x"){ const arr=(d.extra||{})[p[1]]||[]; const pair=arr[+p[2]]||[]; return pair[1]; }
   return "";
 }
 async function setPath(id,path,value){
-  const row=await ensureDraft(id); const d=row.data=row.data||{};
-  const p=path.split(".");
-  if(p.length===1) d[p[0]]=value;
-  else if(p.length===2){ (d[p[0]]=d[p[0]]||{})[p[1]]=value; }
-  else if(p.length===3){ const arr=d[p[0]]=d[p[0]]||[]; const r=arr[+p[1]]=arr[+p[1]]||[]; r[+p[2]]=value; }
-  // keep identity columns synced
-  SCHEMA.identity.forEach(f=>{ if(f.col && f.k===path) row[f.col]=value; });
-  if(path==="n") row.name=value; if(path==="j") row.jde=value; if(path==="p") row.project_name=value; if(path==="hub") row.hub=value;
+  const row=await ensureDraft(id); const d=row.data=row.data||{}; d.f=d.f||{};
+  const p=path.split("."); const kind=p[0];
+  if(kind==="f"){ d.f[p[1]]=value;
+    const I=SCHEMA.IDENTITY;
+    if(p[1]===I.name) row.name=value; if(p[1]===I.jde) row.jde=value;
+    if(p[1]===I.project) row.project_name=value; if(p[1]===I.product) row.hub=value;
+  }
+  else if(kind==="note") d.note=value;
+  else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||["","","","",""]; r[+p[2]]=value; }
+  else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
-async function plAdd(id,key){ const row=await ensureDraft(id); const d=row.data=row.data||{}; const arr=d[key]=d[key]||[]; arr.push(["","","",""]); await saveDraft(row); openDetail(id); }
-async function plDel(id,ri){ const row=await ensureDraft(id); const d=row.data||{}; const sec=SCHEMA.sections.find(s=>s.type==="table"); const arr=d[sec.key]||[]; arr.splice(ri,1); await saveDraft(row); openDetail(id); }
+async function plAdd(id){ const row=await ensureDraft(id); const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
+async function plDel(id,ri){ const row=await ensureDraft(id); const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
 
-/* ---------- export a CIS to .xlsx ---------- */
+/* ---------- export a CIS to .xlsx (mirrors the workbook layout) ---------- */
+function cisAOA(row){
+  const d=row.data||{}; const aoa=[]; aoa.push([row.name||"(untitled)"]);
+  SCHEMA.SECTIONS.forEach(sec=>{
+    aoa.push([]); aoa.push([sec.title]);
+    if(sec.kind==="kv"){ sec.fields.forEach(f=> aoa.push([f.label, fval(d,f.k)]));
+      ((d.extra&&d.extra[sec.id])||[]).forEach(pr=> aoa.push([pr[0], pr[1]||""])); }
+    else if(sec.kind==="plans"){ aoa.push(SCHEMA.PLAN_COLS.slice());
+      (d.plans||[]).forEach(r=> aoa.push(SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||""))); }
+    else if(sec.kind==="note"){ aoa.push([d.note==null?"":String(d.note)]); }
+  });
+  if(d.meta){ aoa.push([]); aoa.push([String(d.meta)]); }
+  return aoa;
+}
 function exportCIS(id){
   if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
-  const it=itemById(id); const row=shownRow(it); if(!row){ return; }
-  const d=row.data||{};
-  const aoa=[];
-  aoa.push([row.name||"(untitled)"]);
-  aoa.push(["Community Information Sheet"+(row.status?" — "+row.status:"")]);
-  aoa.push([]);
-  aoa.push(["FIELD","VALUE"]);
-  SCHEMA.identity.forEach(f=> aoa.push([f.label, val(d,f.k)]));
-  aoa.push([]);
-  SCHEMA.sections.forEach(sec=>{
-    aoa.push([sec.title.toUpperCase()]);
-    if(sec.type==="kv"){ sec.fields.forEach(f=> aoa.push([f.label, val(d,f.k)])); }
-    else if(sec.type==="kvgroup"){ const g=d[sec.key]||{}; sec.fields.forEach(f=> aoa.push([f.label, g[f.k]==null?"":String(g[f.k])])); }
-    else if(sec.type==="table"){ const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
-      aoa.push(sec.columns.slice()); arr.forEach(r=> aoa.push(sec.columns.map((c,ci)=>r[ci]||""))); }
-    else if(sec.type==="notes"){ aoa.push(["Notes", val(d,sec.textKey)]);
-      const an=Array.isArray(d[sec.listKey])?d[sec.listKey]:[]; if(an.length) aoa.push([sec.listLabel, an.join("\n")]);
-      const w=Array.isArray(d[sec.caveatKey])?d[sec.caveatKey]:[]; if(w.length) aoa.push([sec.caveatLabel, w.join("\n")]); }
-    aoa.push([]);
-  });
-  const imgs=state.imgs[id]||[];
-  if(imgs.length){ aoa.push(["IMAGES"]); imgs.forEach(im=> aoa.push([im.caption||"(no caption)", im.path])); }
+  const it=itemById(id); const row=shownRow(it); if(!row) return;
+  const ws=XLSX.utils.aoa_to_sheet(cisAOA(row));
+  ws["!cols"]=[{wch:34},{wch:66},{wch:22},{wch:16},{wch:24}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "CIS");
+  XLSX.writeFile(wb, `CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
 
-  const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"]=[{wch:32},{wch:72}];
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "CIS");
-  const safe=(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40);
-  XLSX.writeFile(wb, `CIS_${safe}_${new Date().toISOString().slice(0,10)}.xlsx`);
+/* ---------- export a CIS to PDF (jsPDF + autotable) ---------- */
+function exportCISpdf(id){
+  const jsPDF=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
+  const it=itemById(id); const row=shownRow(it); if(!row) return;
+  if(!jsPDF){ uiAlert("PDF library didn't load — refresh and try again.","Export"); return; }
+  const d=row.data||{}; const doc=new jsPDF({unit:"pt",format:"letter"});
+  const M=40; const navy=[31,56,100], blue=[46,92,138], grey=[244,246,250];
+  doc.setFont("helvetica","bold").setFontSize(15).text(String(row.name||"CIS"),M,46);
+  doc.setFont("helvetica","normal").setFontSize(9).setTextColor(120)
+     .text("Community Information Sheet"+(row.status?" — "+row.status:""),M,60); doc.setTextColor(0);
+  let y=76;
+  const sectionTable=(title, body, opts)=>{ opts=opts||{};
+    doc.autoTable(Object.assign({ startY:y,
+      head:[[{content:title,colSpan:(opts.cols||2),styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}]],
+      body, styles:{fontSize:8,cellPadding:3,overflow:"linebreak",valign:"top"},
+      margin:{left:M,right:M}, theme:"grid",
+      columnStyles: opts.columnStyles || {0:{cellWidth:150,fontStyle:"bold",fillColor:grey}}
+    },opts.extra||{}));
+    y=doc.lastAutoTable.finalY+10; };
+  SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.kind==="kv"){
+      const body=[]; sec.fields.forEach(f=>{ const v=fval(d,f.k); if(v) body.push([f.label,v]); });
+      ((d.extra&&d.extra[sec.id])||[]).forEach(pr=>{ if(pr[1]) body.push([pr[0],pr[1]]); });
+      if(body.length) sectionTable(sec.title, body);
+    } else if(sec.kind==="plans"){
+      const arr=d.plans||[]; if(arr.length){
+        sectionTable(sec.title, arr.map(r=>SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||"")),
+          {cols:SCHEMA.PLAN_COLS.length, columnStyles:{}, extra:{ head:[[
+            {content:sec.title,colSpan:SCHEMA.PLAN_COLS.length,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+            SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,fontStyle:"bold"}}))]}});
+      }
+    } else if(sec.kind==="note"){
+      const t=d.note==null?"":String(d.note); if(t) sectionTable(sec.title, [[t]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}});
+    }
+  });
+  doc.save(`CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
 /* ---------- draft / publish ---------- */
@@ -427,8 +445,8 @@ function refreshItemMeta(id){ const it=itemById(id); const row=it.draft||it.pub;
 async function newCommunity(){
   const name=await uiPrompt("Community name",{title:"New community",okText:"Create",placeholder:"e.g. Bronson's Ridge"});
   if(name==null||!name.trim()) return;
-  const row={ id:uid(), community_id:uid(), status:"draft", source:"manual", name:name.trim(),
-    data:{ n:name.trim() } };
+  const row={ community_id:uid(), status:"draft", source:"manual", name:name.trim(),
+    data:{ f:{ [SCHEMA.IDENTITY.name]:name.trim() }, plans:[], note:"", extra:{} } };
   await saveDraft(row); await loadAll(); render(); openDetail(row.community_id);
 }
 async function startDraft(id){ await ensureDraft(id); await loadAll(); render(); openDetail(id); }
@@ -540,10 +558,9 @@ function renderNotes(a){
 function isGap(v){ const s=lc(v).trim(); return !s || s==="tbd" || s==="tbd in source"; }
 function gapRows(){
   const rows=[];
-  state.items.forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{};
-    SCHEMA.sections.forEach(sec=>{
-      if(sec.type==="kv") sec.fields.forEach(f=>{ if(isGap(d[f.k])) rows.push({name:it.name,id:it.id,field:f.label,status:(lc(d[f.k])==="tbd"?"TBD in source":"Missing")}); });
-      if(sec.type==="kvgroup"){ const g=d[sec.key]||{}; sec.fields.forEach(f=>{ if(isGap(g[f.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+f.label,status:(lc(g[f.k])==="tbd"?"TBD in source":"Missing")}); }); }
+  state.items.forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
+    SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
+      sec.fields.forEach(fl=>{ if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
   });
   return rows;
@@ -563,52 +580,126 @@ function renderGaps(a){
 
 /* ---------------- ADD / IMPORT (editor) ---------------- */
 function renderAdd(a){
-  a.innerHTML=`<div class="note">Import a CIS <b>PDF</b> to start a draft. Text is extracted best-effort and pre-fills what it can; review and correct on the community page before publishing. You can also start a blank community from the Communities tab.</div>
-    <div class="drop" id="drop"><b>Drop CIS PDF(s) here</b><div class="hint">or click to browse</div><input type="file" id="file" accept="application/pdf" multiple hidden></div>
+  const draftN=state.items.filter(it=>it.hasDraft).length;
+  a.innerHTML=`<div class="note"><b>Import the CIS workbook (.xlsx)</b> — one community per sheet — to create/update drafts, or drop CIS <b>PDF(s)</b> for best-effort extraction. Imported communities land as drafts; review them, then Publish (or use "Publish all drafts").</div>
+    <div class="drop" id="dropXls"><b>Drop the Community Information Sheets .xlsx here</b><div class="hint">or click to browse — every community sheet becomes a draft</div><input type="file" id="fileXls" accept=".xlsx,.xlsm" hidden></div>
+    <div class="drop" id="drop" style="margin-top:10px"><b>Drop CIS PDF(s) here</b><div class="hint">or click to browse (best-effort)</div><input type="file" id="file" accept="application/pdf" multiple hidden></div>
+    <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
     <div class="log" id="log"></div>`;
-  const drop=$("drop"), file=$("file"), log=$("log");
-  const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
+  const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
+  const dropX=$("dropXls"), fileX=$("fileXls");
+  dropX.onclick=()=>fileX.click();
+  ["dragover","dragenter"].forEach(ev=>dropX.addEventListener(ev,e=>{e.preventDefault();dropX.classList.add("hot");}));
+  ["dragleave","drop"].forEach(ev=>dropX.addEventListener(ev,e=>{e.preventDefault();dropX.classList.remove("hot");}));
+  dropX.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importXlsx(f,logln); });
+  fileX.onchange=()=>{ if(fileX.files[0]) importXlsx(fileX.files[0],logln); };
+  const drop=$("drop"), file=$("file");
   drop.onclick=()=>file.click();
   ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hot");}));
   ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hot");}));
-  drop.addEventListener("drop",e=>{ const fs=[...(e.dataTransfer.files||[])].filter(f=>/pdf$/i.test(f.type)||/\.pdf$/i.test(f.name)); if(fs.length) importPdfs(fs,logln); });
+  drop.addEventListener("drop",e=>{ const fs=[...(e.dataTransfer.files||[])].filter(f=>/\.pdf$/i.test(f.name)); if(fs.length) importPdfs(fs,logln); });
   file.onchange=()=>{ if(file.files.length) importPdfs([...file.files],logln); };
+  $("pubAll").onclick=()=>publishAllDrafts(logln);
 }
+
+/* ---- xlsx import: one community per sheet ---- */
+function parseSheet(aoa){
+  const HDR={ "project information":"proj","floor plans":"plans","home construction specifications":"hcs",
+    "community specific specifications":"cs","utility providers":"up","notes (special circumstances)":"note","community map":"map" };
+  const idx=SCHEMA.labelIndex(); const norm=SCHEMA.norm;
+  const data={ f:{}, plans:[], note:"", extra:{} }; let cur=null; const noteLines=[]; let meta="";
+  for(const rrow of aoa){
+    const a=(rrow[0]==null?"":String(rrow[0])).trim();
+    const b=(rrow[1]==null?"":String(rrow[1])).trim();
+    if(!a && !b) continue;
+    if(a.indexOf("←")===0) continue;
+    if(/^created by/i.test(a) || /^source:/i.test(a)){ meta=a; continue; }
+    const h=HDR[a.toLowerCase()]; if(h!==undefined){ cur=h; continue; }
+    if(/^plan number$/i.test(a)) continue;               // plans header row
+    if(cur==="plans"){
+      if(/^final plan offering/i.test(a)) continue;
+      if(a||b) data.plans.push([a, b, (rrow[2]==null?"":String(rrow[2])), (rrow[3]==null?"":String(rrow[3])), (rrow[4]==null?"":String(rrow[4]))]);
+      continue;
+    }
+    if(cur==="note"){ if(a) noteLines.push(a); continue; }
+    if(cur==="map") continue;
+    if(b!==""){ const m=idx[norm(a)]; if(m) data.f[m.key]=b; else { (data.extra[cur||"proj"]=data.extra[cur||"proj"]||[]).push([a,b]); } }
+  }
+  data.note=noteLines.join("\n"); if(meta) data.meta=meta;
+  const I=SCHEMA.IDENTITY, f=data.f;
+  return { data, name:f[I.name]||"", jde:f[I.jde]||"", project:f[I.project]||"", product:f[I.product]||"" };
+}
+async function importXlsx(file, logln){
+  if(!window.XLSX){ logln("Spreadsheet library not loaded.","err"); return; }
+  logln("Reading "+file.name+"…");
+  let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:"array"}); }catch(e){ logln("Couldn't read workbook: "+(e.message||e),"err"); return; }
+  const skip=new Set(["home","to do"]);
+  const byJde=new Map(), byName=new Map();
+  state.items.forEach(it=>{ if(it.jde) byJde.set(String(it.jde).trim(),it.id); if(it.name) byName.set(lc(it.name),it.id); });
+  const payloads=[]; let n=0;
+  wb.SheetNames.forEach(sn=>{ if(skip.has(sn.trim().toLowerCase())) return;
+    const aoa=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,blankrows:false,defval:null});
+    if(!aoa.length) return;
+    const p=parseSheet(aoa);
+    const nm=p.name||String(aoa[0]&&aoa[0][0]||sn).trim();
+    const cid=(p.jde&&byJde.get(String(p.jde).trim()))||(nm&&byName.get(lc(nm)))||uid();
+    payloads.push({ community_id:cid, division:"orlando", status:"draft", source:"CIS",
+      name:nm||sn, jde:p.jde||null, project_name:p.project||null, hub:p.product||null,
+      needs_review:true, data:p.data, updated_at:new Date().toISOString(), updated_by:state.email });
+    n++;
+  });
+  if(!payloads.length){ logln("No community sheets found.","warn"); return; }
+  let ok=0;
+  for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
+    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"});
+    if(error){ logln("Batch failed: "+error.message,"err"); } else ok+=batch.length; }
+  logln(`Imported ${ok} of ${n} communities as drafts. Review, then Publish (or "Publish all drafts").`,"ok");
+  await loadAll(); render();
+}
+async function publishAllDrafts(logln){
+  const ids=state.items.filter(it=>it.hasDraft).map(it=>it.id);
+  if(!ids.length){ if(logln)logln("No drafts to publish.","warn"); return; }
+  if(!(await uiConfirm(`Publish all ${ids.length} drafts? Each becomes the live version for viewers.`,{title:"Publish all drafts",okText:"Publish all"}))) return;
+  let ok=0;
+  for(const id of ids){ const { data,error }=await sb.rpc("cdb_publish",{p_community_id:id}); if(!error&&data&&data.ok) ok++; }
+  if(logln) logln(`Published ${ok} of ${ids.length} drafts.`, ok===ids.length?"ok":"warn");
+  await loadAll(); render();
+}
+
+/* ---- PDF import (best-effort) → new data model ---- */
 async function importPdfs(files, logln){
   if(!window.pdfjsLib){ logln("PDF library not loaded.","err"); return; }
   for(const f of files){
     logln("Reading "+f.name+"…");
     try{
-      const buf=await f.arrayBuffer();
-      const pdf=await pdfjsLib.getDocument({data:buf}).promise;
-      let text="";
-      for(let p=1;p<=pdf.numPages;p++){ const pg=await pdf.getPage(p); const c=await pg.getTextContent(); text+=c.items.map(i=>i.str).join(" ")+"\n"; }
-      const data=extractCIS(text, f.name);
-      const row={ id:uid(), community_id:uid(), status:"draft", source:"CIS", name:data.n||f.name.replace(/\.pdf$/i,""), jde:data.j||null, project_name:data.p||null, hub:null, needs_review:true, data };
+      const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+      let text=""; for(let p=1;p<=pdf.numPages;p++){ const pg=await pdf.getPage(p); const c=await pg.getTextContent(); text+=c.items.map(i=>i.str).join(" ")+"\n"; }
+      const F=extractCISfields(text);
+      const data={ f:F, plans:[], note:"", extra:{} };
+      const I=SCHEMA.IDENTITY;
+      const row={ community_id:uid(), status:"draft", source:"CIS", name:F[I.name]||f.name.replace(/\.pdf$/i,""),
+        jde:F[I.jde]||null, project_name:F[I.project]||null, hub:F[I.product]||null, needs_review:true, data };
       await saveDraft(row);
       logln("Draft created: "+(row.name||f.name)+" — review before publishing.","ok");
     }catch(e){ logln("Failed on "+f.name+": "+(e.message||e),"err"); }
   }
-  await loadAll(); updateCounts();
+  await loadAll(); render();
 }
-// best-effort field extraction from raw CIS text
-function extractCIS(text, fname){
-  const d={ w:["Auto-extracted from PDF — verify every field before publishing."] };
-  const grab=(re)=>{ const m=text.match(re); return m?m[1].trim().replace(/\s{2,}/g," "):""; };
-  d.n  = grab(/Community Name[:\s]+([^\n]+?)(?:JDE|Project|Division|$)/i);
-  d.p  = grab(/Project Name[:\s]+([^\n]+?)(?:JDE|Community|Division|$)/i);
-  d.j  = grab(/JDE(?:\s*Community)?\s*#?[:\s]+(\d{6,8})/i);
-  d.mun= grab(/Municipality[:\s]+([^\n]+?)(?:City|County|$)/i);
-  d.cty= grab(/City[,\s].*?Zip[:\s]+([^\n]+?)(?:Revision|$)/i);
-  d.dev= grab(/Developer[:\s]+([^\n]+?)(?:Owning|Owner|$)/i);
-  d.oe = grab(/Owning Entity[:\s]+([^\n]+?)(?:Municipality|$)/i);
-  d.rev= grab(/Revision Date[:\s]+([^\n]+?)(?:Created|CIS|$)/i);
-  d.hs = grab(/Total HS[^:]*[:\s]+([0-9]+)/i);
-  d.lot= grab(/Homesite\s*AVG\s*Size[:\s]+([^\n]+?)(?:Base|$)/i);
-  d.bs = grab(/Base Spec[:\s]+([^\n]+?)(?:BuildPro|Template|$)/i);
-  d.pace=grab(/Sales Pace[^:]*[:\s]+([0-9]+)/i);
-  Object.keys(d).forEach(k=>{ if(d[k]==="") delete d[k]; });
-  return d;
+function extractCISfields(text){
+  const f={}; const grab=(re)=>{ const m=text.match(re); return m?m[1].trim().replace(/\s{2,}/g," "):""; };
+  const set=(k,v)=>{ if(v) f[k]=v; };
+  set("community_name", grab(/Community Name[:\s]+([^\n]+?)(?:JDE|Project|Division|$)/i));
+  set("project_name",  grab(/Project Name[:\s]+([^\n]+?)(?:JDE|Community|Division|$)/i));
+  set("jde",           grab(/JDE(?:\s*Community)?\s*#?[:\s]+(\d{6,8})/i));
+  set("municipality",  grab(/Municipality[:\s]+([^\n]+?)(?:City|County|$)/i));
+  set("city_state_zip",grab(/City[,\s].*?Zip[:\s]+([^\n]+?)(?:Owning|Revision|$)/i));
+  set("developer",     grab(/Developer[:\s]+([^\n]+?)(?:Total|Owning|Owner|$)/i));
+  set("owning_entity", grab(/Owning Entity[:\s]+([^\n]+?)(?:Municipality|$)/i));
+  set("total_hs",      grab(/Total HS[^:]*[:\s]+([0-9]+)/i));
+  set("homesite_avg",  grab(/Homesite\s*AVG\s*Size[:\s]+([^\n]+?)(?:Community|Base|$)/i));
+  set("base_spec",     grab(/Base Spec[:\s]+([^\n]+?)(?:Product|BuildPro|$)/i));
+  set("product_type",  grab(/Product Type[:\s]+([^\n]+?)(?:Developer|$)/i));
+  return f;
 }
 
 /* ---------------- ABOUT ---------------- */

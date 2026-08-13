@@ -10,82 +10,94 @@ window.APP_CONFIG = {
   ALLOWED_DOMAIN: "@lennar.com",
   DIVISION: { key: "orlando", label: "Orlando Division", code: "OLH" },
 
-  // Fallback roles if the cdb_app_roles table can't be read. The DB is authoritative.
   ROLES: { "stephen.svedman@lennar.com": { role: "admin" } },
   DEFAULT_ROLE: "viewer",
 
   IMAGE_BUCKET: "cdb-images",
-  // Downsample uploads: longest edge capped, re-encoded as JPEG to protect the
-  // Supabase free-tier storage while staying crisp on a 1080p display.
   IMAGE_MAX_EDGE: 1600,
   IMAGE_QUALITY: 0.82
 };
 
 /* ------------------------------------------------------------------
-   CIS SCHEMA — one source of truth for both the viewer and the maker.
-   Every field's value lives in the CIS row's `data` JSONB under its key.
-   Identity fields (name/jde/project_name/hub/model_start) are ALSO mirrored
-   to real columns for fast listing/search; the app keeps them in sync.
+   CIS SCHEMA — mirrors the "Community Information Sheets" workbook.
+   Every value lives in the CIS row's `data`:
+     data.f[<key>]      – all key/value fields (across sections)
+     data.plans[]       – Floor Plans rows (5 columns)
+     data.note          – Notes (Special Circumstances) text
+     data.extra[secId][]– any label/value not in the schema (import-safe)
+     data.meta          – footer (created-by / source), if any
+   Identity fields are ALSO mirrored to real columns for listing/search.
    ------------------------------------------------------------------ */
-window.CIS_SCHEMA = {
-  // quick-identity fields shown at the top of the maker form
-  identity: [
-    { k: "n",  label: "Community Name", col: "name",         required: true },
-    { k: "p",  label: "Project Name",   col: "project_name" },
-    { k: "j",  label: "JDE Community #",col: "jde" },
-    { k: "hub",label: "Hub" }
-  ],
-  sections: [
-    { id: "overview", title: "Community overview", type: "kv", fields: [
-      { k: "alt",  label: "Additional JDE #(s)" },
-      { k: "div",  label: "Division" },
-      { k: "dev",  label: "Developer" },
-      { k: "oe",   label: "Owning Entity" },
-      { k: "mun",  label: "Permitting Municipality" },
-      { k: "cty",  label: "City, State, Zip" },
-      { k: "rev",  label: "Revision Date" },
-      { k: "cd",   label: "CIS Date (printed)" },
-      { k: "cb",   label: "Created By" },
-      { k: "so",   label: "Sales Opening Date" },
-      { k: "tr",   label: "Proj. Trench Date" },
-      { k: "ms",   label: "Model Start", flag: "ms" },
-      { k: "pace", label: "Sales Pace / Month" },
-      { k: "hs",   label: "Total HS in Phase/Tract" },
-      { k: "lot",  label: "Homesite AVG Size" },
-      { k: "bs",   label: "Base Spec" },
-      { k: "bp",   label: "BuildPro Template Type" },
-      { k: "tn",   label: "Template Name to Use" }
+window.CIS = {
+  PLAN_COLS: ["Plan Number","Plan Name - Footprint","Elevations","New Plan","New Add or Delete"],
+  IDENTITY: { name:"community_name", jde:"jde", project:"project_name", product:"product_type" },
+  SECTIONS: [
+    { id:"proj", title:"Project Information", kind:"kv", fields:[
+      { k:"division",       label:"Division" },
+      { k:"date",           label:"Date" },
+      { k:"project_name",   label:"Project Name" },
+      { k:"base_spec",      label:"Base Spec" },
+      { k:"product_type",   label:"Product Type" },
+      { k:"developer",      label:"Developer" },
+      { k:"total_hs",       label:"Total HS in Phase/Tract" },
+      { k:"homesite_avg",   label:"Homesite AVG Size" },
+      { k:"community_name", label:"Community Name" },
+      { k:"jde",            label:"JDE Community #" },
+      { k:"trench_date",    label:"Proj. Trench Date" },
+      { k:"municipality",   label:"Permitting Municipality" },
+      { k:"city_state_zip", label:"City, State, Zip" },
+      { k:"owning_entity",  label:"Owning Entity" }
     ]},
-    { id: "plans", title: "Plans / elevations", type: "table",
-      key: "pl", columns: ["Plan #","Plan Name / footprint","Elevations","Notes / VE"] },
-    { id: "cs", title: "Community specific", type: "kvgroup", key: "cs", fields: [
-      { k: "curb_type",                label: "Curb Type" },
-      { k: "sod_type",                 label: "Sod Type" },
-      { k: "landscaping",              label: "Landscaping" },
-      { k: "waterstar_required",       label: "WaterStar Required" },
-      { k: "darksky_required",         label: "DarkSky Required" },
-      { k: "gas_or_electric_community",label: "Gas or Electric Community" },
-      { k: "mail_boxes",               label: "Mail Boxes" },
-      { k: "yard_fencing",             label: "Yard Fencing" },
-      { k: "pools",                    label: "Pools" },
-      { k: "pools_alternate_size",     label: "Pools - Alternate Size" },
-      { k: "pools_spa",                label: "Pools - Spa" },
-      { k: "upper_cabinets_42",        label: "42\" Upper Cabinets" }
+    { id:"plans", title:"Floor Plans", kind:"plans" },
+    { id:"hcs", title:"Home Construction Specifications", kind:"kv", fields:[
+      { k:"ext_wall",         label:"Exterior Wall Type" },
+      { k:"foundation",       label:"Foundation Type" },
+      { k:"insulation",       label:"Insulation - Wall / Ceiling" },
+      { k:"water_heater",     label:"Water Heater Specifications" },
+      { k:"front_door",       label:"Front Door Style" },
+      { k:"front_door_glass", label:"Front Door Glass Option" },
+      { k:"garage_door",      label:"Garage Door Style" },
+      { k:"coach_lights",     label:"Coach Lights" },
+      { k:"window_type",      label:"Window Type" },
+      { k:"roof_material",    label:"Roof Material" },
+      { k:"roof_color",       label:"Roof Color" },
+      { k:"roof_sheathing",   label:"Roof Sheathing Type" },
+      { k:"soffit",           label:"Soffit / Fascia / Drip Edge Color" },
+      { k:"gutters",          label:"Gutters" },
+      { k:"fw_drive",         label:"Flatwork - Drive & Leadwalk" },
+      { k:"fw_front",         label:"Flatwork - Front Entry" },
+      { k:"fw_lanai",         label:"Flatwork - Rear Lanai" },
+      { k:"fw_paver",         label:"Flatwork - Paver Color" },
+      { k:"ext_conc_patio",   label:"Ext Concrete Patio" },
+      { k:"ext_paver_patio",  label:"Ext Paver Patio" },
+      { k:"ext_paver_screen", label:"Ext Paver Patio w/ Screen" },
+      { k:"screen_lanai",     label:"Screen Standard Lanai" }
     ]},
-    { id: "up", title: "Utilities", type: "kvgroup", key: "up", fields: [
-      { k: "power_provider",       label: "Power Provider" },
-      { k: "power_tug",            label: "Power TUG" },
-      { k: "water_meter_provider", label: "Water Meter Provider" },
-      { k: "irrigation_meter",     label: "Irrigation Meter" },
-      { k: "fision_x",             label: "Fision X" },
-      { k: "water",                label: "Water" },
-      { k: "sewer",                label: "Sewer" },
-      { k: "electric",             label: "Electric" },
-      { k: "gas",                  label: "Gas" },
-      { k: "internet",             label: "Internet" }
+    { id:"cs", title:"Community Specific Specifications", kind:"kv", fields:[
+      { k:"curb",          label:"Curb Type" },
+      { k:"gas_electric",  label:"Gas or Electric Community" },
+      { k:"solar",         label:"Solar" },
+      { k:"sod",           label:"Sod Type" },
+      { k:"landscaping",   label:"Landscaping" },
+      { k:"waterstar",     label:"WaterStar Required" },
+      { k:"mailboxes",     label:"Mail Boxes" }
     ]},
-    { id: "notes", title: "Notes & caveats", type: "notes",
-      textKey: "nt", listKey: "an", listLabel: "Annotations",
-      caveatKey: "w", caveatLabel: "Source caveats (read-only)" }
+    { id:"up", title:"Utility Providers", kind:"kv", fields:[
+      { k:"power_provider", label:"Power Provider" },
+      { k:"power_tug",      label:"Power TUG" },
+      { k:"water_meter",    label:"Water Meter Provider" },
+      { k:"irrigation_meter", label:"Irrigation Meter" },
+      { k:"fision_x",       label:"Fision X" }
+    ]},
+    { id:"note", title:"Notes (Special Circumstances)", kind:"note" }
   ]
 };
+
+/* normalize a label for matching (lowercase, strip punctuation/whitespace/asterisks) */
+window.CIS.norm = s => String(s==null?"":s).toLowerCase().replace(/[\s:*]+/g," ").replace(/[^a-z0-9 /&.'-]/g,"").trim();
+/* normalized-label -> {sec,key} index for import */
+window.CIS.labelIndex = (function(){
+  const idx={};
+  window.CIS.SECTIONS.forEach(sec=>{ (sec.fields||[]).forEach(f=>{ idx[window.CIS.norm(f.label)]={sec:sec.id,key:f.k}; }); });
+  return () => idx;
+})();
