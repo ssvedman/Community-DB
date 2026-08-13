@@ -35,6 +35,7 @@ window.CIS = {
     { id:"proj", title:"Project Information", kind:"kv", fields:[
       { k:"division",       label:"Division" },
       { k:"date",           label:"Date" },
+      { k:"rev_date",       label:"Revision Date" },
       { k:"project_name",   label:"Project Name" },
       { k:"base_spec",      label:"Base Spec" },
       { k:"product_type",   label:"Product Type" },

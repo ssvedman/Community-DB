@@ -602,6 +602,24 @@ function renderAdd(a){
   $("pubAll").onclick=()=>publishAllDrafts(logln);
 }
 
+/* Some sheets cram elevations + New Plan into the Plan Name cell, e.g.
+   "Annapolis - (30' x 65') H, J, K No", leaving the Elevations/New Plan columns
+   blank. When those columns are empty, split the trailing text out. */
+function splitPlanRow(a,b,c,d,e){
+  const S=x=>x==null?"":String(x).trim();
+  a=S(a); b=S(b); c=S(c); d=S(d); e=S(e);
+  if(c || d){ return [a,b,c,d,e]; }           // already separated — leave as-is
+  const paren=b.lastIndexOf(")");
+  if(paren<0 || paren===b.length-1) return [a,b,c,d,e];
+  const name=b.slice(0,paren+1).trim();
+  let rest=b.slice(paren+1).trim();
+  if(!rest) return [a,name,c,d,e];
+  let elev=rest, np="";
+  const m=rest.match(/\b(Yes|No)\b.*$/i);     // trailing New Plan token
+  if(m){ np=rest.slice(m.index).trim(); elev=rest.slice(0,m.index).replace(/[,\s]+$/,"").trim(); }
+  return [a,name,elev,np,e];
+}
+
 /* ---- xlsx import: one community per sheet ---- */
 function parseSheet(aoa){
   const HDR={ "project information":"proj","floor plans":"plans","home construction specifications":"hcs",
@@ -618,7 +636,7 @@ function parseSheet(aoa){
     if(/^plan number$/i.test(a)) continue;               // plans header row
     if(cur==="plans"){
       if(/^final plan offering/i.test(a)) continue;
-      if(a||b) data.plans.push([a, b, (rrow[2]==null?"":String(rrow[2])), (rrow[3]==null?"":String(rrow[3])), (rrow[4]==null?"":String(rrow[4]))]);
+      if(a||b) data.plans.push(splitPlanRow(a, b, rrow[2], rrow[3], rrow[4]));
       continue;
     }
     if(cur==="note"){ if(a) noteLines.push(a); continue; }

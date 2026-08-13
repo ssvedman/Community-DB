@@ -1,19 +1,20 @@
 /* Community-DB — styles (design language shared with the other portals) */
 :root{
-  --navy:#1f3864; --blue:#2e5c8a; --blue-050:#e8f0fb; --blue-600:#24507c;
-  --link:#0563c1; --line:#d8dee8; --grey:#f4f6fa; --card:#ffffff;
-  --amber:#fff4d6; --amberline:#e8c86a; --red:#c0392b; --redbg:#fdecea;
-  --green:#1e7a46; --greenbg:#e8f5ee; --ink:#16233a; --mute:#6b7794;
-  --edit:#7a4bc4; --editbg:#f3edfd; --bg:#f4f6fa; --shadow:0 10px 30px rgba(16,32,64,.14);
+  --navy:#0a2540; --blue:#0057b8; --blue-600:#0064d2; --blue-050:#eaf2fc;
+  --link:#0057b8; --line:#e3e8ef; --grey:#f5f7fa; --card:#ffffff;
+  --amber:#fff4d6; --amberline:#e8c86a; --red:#b3261e; --redbg:#fdecea;
+  --green:#1a8f57; --greenbg:#e8f5ee; --ink:#1a2433; --mute:#5b6b7f; --muted:#5b6b7f;
+  --edit:#7a4bc4; --editbg:#f3edfd; --bg:#f5f7fa;
+  --shadow:0 1px 3px rgba(10,37,64,.08),0 8px 24px rgba(10,37,64,.06);
   --radius:12px;
 }
 [data-theme="dark"]{
-  --navy:#0c1929; --blue:#2e5c8a; --blue-050:#12263d; --card:#0f1b2c; --bg:#0a1420;
-  --ink:#e7ecf4; --mute:#93a2b8; --line:#213247; --grey:#12202f; --greenbg:#10241a; --redbg:#2a1414; --editbg:#1b1630;
+  --navy:#0c1929; --blue:#2f74c8; --blue-050:#12263d; --card:#0f1b2c; --bg:#0a1420;
+  --ink:#e7ecf4; --mute:#93a2b8; --muted:#93a2b8; --line:#213247; --grey:#12202f; --greenbg:#10241a; --redbg:#2a1414; --editbg:#1b1630;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
-body{font:14px/1.45 -apple-system,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}
+body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;font-size:14px;line-height:1.45;color:var(--ink);background:var(--bg)}
 .hidden{display:none!important}
 a{color:var(--link)}
 .tiny{font-size:12px;color:var(--mute)}
@@ -21,7 +22,7 @@ a{color:var(--link)}
 
 /* ---------- auth ---------- */
 #auth{min-height:100vh;display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(135deg,#1f3864,#2e5c8a);padding:24px}
+  background:linear-gradient(135deg,#0a2540,#0057b8);padding:24px}
 .auth-card{background:#fff;width:100%;max-width:420px;border-radius:16px;padding:36px 34px;box-shadow:0 20px 60px rgba(0,0,0,.28);color:#16233a}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:6px}
 .auth-logo{width:42px;height:42px}
@@ -35,7 +36,8 @@ input:focus{border-color:var(--blue)}
 .btn:disabled{opacity:.55;cursor:not-allowed}
 .btn.ghost{background:#fff;color:var(--blue);border:1.5px solid var(--line)}
 .btn.mini{width:auto;padding:8px 13px;font-size:13px;border-radius:8px}
-.btn.solid{background:#ffd452;color:#3a2d00}
+.btn.solid{background:var(--blue);color:#fff}
+.btn.solid:hover{background:var(--blue-600)}
 .btn.danger{background:#fff;color:var(--red);border:1.5px solid var(--red)}
 .btn.danger:hover{background:var(--redbg)}
 .msg{margin-top:14px;font-size:13.5px;padding:0;border-radius:9px}
@@ -52,15 +54,15 @@ input:focus{border-color:var(--blue)}
 .title .sub{font-size:12px;font-weight:400;opacity:.8;margin-left:6px}
 .spacer{flex:1}
 .user-chip{font-size:12.5px;opacity:.95;background:rgba(255,255,255,.1);padding:4px 10px;border-radius:20px}
-.role-tag{display:inline-block;background:#ffd452;color:#3a2d00;border-radius:12px;padding:0 7px;font-size:10.5px;font-weight:700;text-transform:uppercase;margin-left:4px}
+.role-tag{display:inline-block;background:rgba(255,255,255,.2);color:#fff;border-radius:12px;padding:0 7px;font-size:10.5px;font-weight:700;text-transform:uppercase;margin-left:4px}
 .linkbtn{background:none;border:none;color:#dbe6f5;font-weight:600;font-size:13px;padding:6px 8px;border-radius:7px;cursor:pointer}
 .linkbtn:hover{background:rgba(255,255,255,.12);color:#fff}
 .mode-toggle{display:inline-flex;background:rgba(255,255,255,.12);border-radius:8px;padding:2px}
 .mode-toggle .mode{background:none;border:none;color:#dbe6f5;font-weight:600;font-size:12.5px;padding:5px 12px;border-radius:6px;cursor:pointer}
-.mode-toggle .mode.on{background:#ffd452;color:#3a2d00}
+.mode-toggle .mode.on{background:#fff;color:var(--blue)}
 .tabs{display:flex;gap:2px;background:var(--blue);padding:0 10px;flex-wrap:wrap}
 .tab{background:transparent;border:0;color:#dbe6f5;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent}
-.tab.active{color:#fff;border-bottom-color:#ffd452;background:rgba(255,255,255,.09)}
+.tab.active{color:#fff;border-bottom-color:#fff;background:rgba(255,255,255,.12)}
 .tab .count{background:rgba(255,255,255,.2);border-radius:9px;padding:1px 7px;margin-left:6px;font-size:11px}
 
 main{max-width:1220px;margin:0 auto;padding:16px 18px 48px}

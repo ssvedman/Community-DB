@@ -157,7 +157,7 @@ create policy cdb_notes_write on public.cdb_notes for all
 -- publish that community's images, and clear the draft. Editors/admins only.
 create or replace function public.cdb_publish(p_community_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare d public.cdb_cis; begin
+declare d public.cdb_cis; v_rev text; v_data jsonb; begin
   if not public.cdb_is_editor() then
     return jsonb_build_object('ok', false, 'error', 'Not authorized.');
   end if;
@@ -166,11 +166,17 @@ declare d public.cdb_cis; begin
     return jsonb_build_object('ok', false, 'error', 'No draft to publish.');
   end if;
 
+  -- stamp the published copy with a revision date (M.D.YY, Eastern time)
+  v_rev := to_char((now() at time zone 'America/New_York'), 'FMMM.FMDD.YY');
+  v_data := coalesce(d.data, '{}'::jsonb);
+  if not (v_data ? 'f') then v_data := v_data || '{"f":{}}'::jsonb; end if;
+  v_data := jsonb_set(v_data, '{f,rev_date}', to_jsonb(v_rev), true);
+
   insert into public.cdb_cis
         (community_id, division, status, name, jde, project_name, hub, source,
          model_start, needs_review, data, updated_at, updated_by, published_at)
   values (d.community_id, d.division, 'published', d.name, d.jde, d.project_name, d.hub, d.source,
-         d.model_start, false, d.data, now(), public.cdb_email(), now())
+         d.model_start, false, v_data, now(), public.cdb_email(), now())
   on conflict (community_id, status) do update set
         division=excluded.division, name=excluded.name, jde=excluded.jde,
         project_name=excluded.project_name, hub=excluded.hub, source=excluded.source,
@@ -178,7 +184,7 @@ declare d public.cdb_cis; begin
         updated_at=now(), updated_by=public.cdb_email(), published_at=now();
 
   insert into public.cdb_cis_revisions (community_id, name, jde, data, published_by)
-  values (d.community_id, d.name, d.jde, d.data, public.cdb_email());
+  values (d.community_id, d.name, d.jde, v_data, public.cdb_email());
 
   update public.cdb_images set published = true where community_id = d.community_id;
 
@@ -310,10 +316,15 @@ declare v_email text; v_created timestamptz; v_used timestamptz; begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- List every existing auth user (shared across the portals) with their role,
+-- defaulting to 'viewer' — same behavior as the other two sites.
 create or replace function public.cdb_admin_list_users()
-returns table(email text, role text) language sql security definer set search_path = public as $$
-  select r.email, r.role from public.cdb_app_roles r
-  where public.cdb_is_admin() order by r.email
+returns table(email text, role text) language sql security definer set search_path = public, auth as $$
+  select lower(u.email) as email, coalesce(r.role, 'viewer') as role
+  from auth.users u
+  left join public.cdb_app_roles r on lower(r.email) = lower(u.email)
+  where public.cdb_is_admin() and u.email is not null
+  order by lower(u.email)
 $$;
 
 /* -------------------------------------------------------- storage bucket -- */
