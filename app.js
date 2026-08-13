@@ -454,7 +454,7 @@ function exportCISpdf(id){
         sectionTable(sec.title, arr.map(r=>SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||"")),
           {cols:SCHEMA.PLAN_COLS.length, columnStyles:{}, extra:{ head:[[
             {content:sec.title,colSpan:SCHEMA.PLAN_COLS.length,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
-            SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,fontStyle:"bold"}}))]}});
+            SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]}});
       }
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(t) sectionTable(sec.title, [[t]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}});
