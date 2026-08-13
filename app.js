@@ -11,8 +11,6 @@ let sb = null;
 if (!DEMO && window.supabase) sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY, {
   auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, storageKey:"lennar-vendor-portal-auth" }
 });
-if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 const state = { email:null, role:"viewer", mode:"view", view:"browse",
                 items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false };
@@ -148,7 +146,7 @@ function wireChrome(){
   $("adminLink").onclick=showAdmin; $("dashLink").onclick=()=>{ showDash(); render(); };
   $("modeToggle").querySelectorAll(".mode").forEach(b=>b.onclick=()=>{
     state.mode=b.dataset.mode; $("modeToggle").querySelectorAll(".mode").forEach(x=>x.classList.toggle("on",x===b));
-    if(state.mode==="view" && (state.view==="gaps"||state.view==="add")){ state.view="browse"; setTab(); }
+    if(state.mode==="view" && state.view==="add"){ state.view="browse"; setTab(); }
     syncEditorTabs(); render();
   });
   $("tabs").querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ state.view=t.dataset.view; setTab(); showDash(); render(); });
@@ -202,13 +200,13 @@ function render(){
   updateCounts();
   const a=$("viewArea");
   if(state.view==="browse") return renderBrowse(a);
-  if(state.view==="gaps"  && isEditor()) return renderGaps(a);
+  if(state.view==="gaps") return renderGaps(a);
   if(state.view==="add"   && isEditor()) return renderAdd(a);
   state.view="browse"; setTab(); renderBrowse(a);
 }
 function updateCounts(){
   $("cBrowse").textContent = visibleItems().length;
-  const g=$("cGaps"); if(g) g.textContent = isEditor()? gapRows().length : "";
+  const g=$("cGaps"); if(g) g.textContent = gapRows().length;
 }
 
 /* ---------------- BROWSE ---------------- */
@@ -552,7 +550,7 @@ async function delImage(id,imgId){ if(!(await uiConfirm("Delete this image?",{ti
 function isGap(v){ const s=lc(v).trim(); return !s || s==="tbd" || s==="tbd in source"; }
 function gapRows(){
   const rows=[];
-  state.items.forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
+  state.items.forEach(it=>{ if(!it.active) return; const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
     SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
       sec.fields.forEach(fl=>{ if(fl.readonly) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
@@ -575,9 +573,8 @@ function renderGaps(a){
 /* ---------------- ADD / IMPORT (editor) ---------------- */
 function renderAdd(a){
   const draftN=state.items.filter(it=>it.hasDraft).length;
-  a.innerHTML=`<div class="note"><b>Import the CIS workbook (.xlsx)</b> — one community per sheet — to create/update drafts, or drop CIS <b>PDF(s)</b> for best-effort extraction. Imported communities land as drafts; review them, then Publish (or use "Publish all drafts").</div>
+  a.innerHTML=`<div class="note"><b>Import the CIS workbook (.xlsx)</b> — one community per sheet — to create/update drafts. Imported communities land as drafts; review them, then Publish (or use "Publish all drafts").</div>
     <div class="drop" id="dropXls"><b>Drop the Community Information Sheets .xlsx here</b><div class="hint">or click to browse — every community sheet becomes a draft</div><input type="file" id="fileXls" accept=".xlsx,.xlsm" hidden></div>
-    <div class="drop" id="drop" style="margin-top:10px"><b>Drop CIS PDF(s) here</b><div class="hint">or click to browse (best-effort)</div><input type="file" id="file" accept="application/pdf" multiple hidden></div>
     <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
     <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
     <div id="clPreview"></div>
@@ -590,12 +587,6 @@ function renderAdd(a){
   ["dragleave","drop"].forEach(ev=>dropX.addEventListener(ev,e=>{e.preventDefault();dropX.classList.remove("hot");}));
   dropX.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importXlsx(f,logln); });
   fileX.onchange=()=>{ if(fileX.files[0]) importXlsx(fileX.files[0],logln); };
-  const drop=$("drop"), file=$("file");
-  drop.onclick=()=>file.click();
-  ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hot");}));
-  ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hot");}));
-  drop.addEventListener("drop",e=>{ const fs=[...(e.dataTransfer.files||[])].filter(f=>/\.pdf$/i.test(f.name)); if(fs.length) importPdfs(fs,logln); });
-  file.onchange=()=>{ if(file.files.length) importPdfs([...file.files],logln); };
   const dropC=$("dropChk"), fileC=$("fileChk");
   dropC.onclick=()=>fileC.click();
   ["dragover","dragenter"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.add("hot");}));
@@ -631,29 +622,47 @@ function parseChecklist(wb){
   });
   return {rows,unmatched};
 }
-let _clApply=[];
+let _clPv=null, _clLog=null;
 async function importChecklist(file, logln){
   if(!window.XLSX){ logln("Spreadsheet library not loaded.","err"); return; }
   logln("Reading "+file.name+"…");
   let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellDates:true}); }catch(e){ logln("Couldn't read: "+(e.message||e),"err"); return; }
-  const pv=parseChecklist(wb);
-  _clApply=[]; pv.rows.forEach(r=>r.matches.forEach(m=>_clApply.push({id:m.id, dateStr:r.dateStr})));
-  const el=$("clPreview");
-  let h=`<div class="panel" style="margin-top:12px"><div class="sec"><span>Trench-date preview — ${_clApply.length} CIS across ${pv.rows.length} communities</span>${_clApply.length?`<button class="btn mini solid" id="clApplyBtn">Apply to ${_clApply.length} CIS as drafts</button>`:""}</div>`;
+  const pv=parseChecklist(wb); pv.unmatched.forEach(u=>u.assign=[]);
+  _clPv=pv; _clLog=logln;
+  renderChecklistPreview();
+  logln(`Checklist parsed: ${pv.rows.length} matched, ${pv.unmatched.length} unmatched. Assign any unmatched, then Apply.`,"ok");
+}
+function clApplyList(){
+  const out=[];
+  if(!_clPv) return out;
+  _clPv.rows.forEach(r=>r.matches.forEach(m=>out.push({id:m.id, dateStr:r.dateStr})));
+  _clPv.unmatched.forEach(u=>(u.assign||[]).forEach(id=>out.push({id, dateStr:u.dateStr})));
+  return out;
+}
+function renderChecklistPreview(){
+  const el=$("clPreview"); if(!el||!_clPv) return; const pv=_clPv; const apply=clApplyList();
+  const opts=state.items.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)))
+    .map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join("");
+  let h=`<div class="panel" style="margin-top:12px"><div class="sec"><span>Trench-date preview — ${apply.length} CIS to update</span>${apply.length?`<button class="btn mini solid" id="clApplyBtn">Apply to ${apply.length} CIS as drafts</button>`:""}</div>`;
   if(pv.rows.length){ h+=`<table><tr><th>Checklist community</th><th>New trench (Model Start)</th><th>CIS updated</th></tr>`+
     pv.rows.map(r=>`<tr><td>${esc(r.comm)}</td><td>${esc(r.dateStr)}</td><td>${r.matches.map(m=>`${esc(m.name)}${m.cur?` <span class="hint">(was ${esc(m.cur)})</span>`:""}`).join("<br>")}</td></tr>`).join("")+`</table>`; }
-  else h+=`<div class="empty">No checklist communities matched a CIS by name.</div>`;
-  if(pv.unmatched.length){ h+=`<div class="sec"><span>No CIS match — skipped (${pv.unmatched.length})</span></div><table>`+
-    pv.unmatched.map(u=>`<tr><td>${esc(u.comm)}</td><td>${esc(u.dateStr)}</td></tr>`).join("")+`</table>`; }
+  if(pv.unmatched.length){ h+=`<div class="sec"><span>Unmatched — assign a CIS to include it (${pv.unmatched.length})</span></div>
+    <table><tr><th>Checklist community</th><th>New trench</th><th>Assign to CIS</th></tr>`+
+    pv.unmatched.map((u,ui)=>`<tr><td>${esc(u.comm)}</td><td>${esc(u.dateStr)}</td><td>${
+      (u.assign||[]).map(id=>`<span class="pill cis" style="margin:2px 4px 2px 0">${esc((itemById(id)||{}).name||"")} <a href="#" class="unassign" data-un="${ui}|${id}">×</a></span>`).join("")
+    }<select data-assign="${ui}"><option value="">+ assign CIS…</option>${opts}</select></td></tr>`).join("")+`</table>`; }
   h+=`</div>`;
   el.innerHTML=h;
-  if($("clApplyBtn")) $("clApplyBtn").onclick=()=>applyChecklist(logln);
-  logln(`Checklist parsed: ${pv.rows.length} matched, ${pv.unmatched.length} unmatched. Review the preview, then Apply.`,"ok");
+  el.querySelectorAll("[data-assign]").forEach(s=>s.onchange=()=>{ const ui=+s.dataset.assign, id=s.value;
+    if(id){ const u=_clPv.unmatched[ui]; u.assign=u.assign||[]; if(!u.assign.includes(id)) u.assign.push(id); renderChecklistPreview(); } });
+  el.querySelectorAll(".unassign").forEach(b=>b.onclick=e=>{ e.preventDefault(); const [ui,id]=b.dataset.un.split("|");
+    const u=_clPv.unmatched[+ui]; u.assign=(u.assign||[]).filter(x=>x!==id); renderChecklistPreview(); });
+  if($("clApplyBtn")) $("clApplyBtn").onclick=()=>applyChecklist();
 }
-async function applyChecklist(logln){
-  if(!_clApply.length) return;
-  if(!(await uiConfirm(`Apply revised trench dates to ${_clApply.length} CIS as drafts? Review and Publish afterward.`,{title:"Apply trench dates",okText:"Apply"}))) return;
-  const payloads=_clApply.map(a=>{ const it=itemById(a.id); const base=it.draft||it.pub;
+async function applyChecklist(){
+  const list=clApplyList(); if(!list.length) return;
+  if(!(await uiConfirm(`Apply revised trench dates to ${list.length} CIS as drafts? Review and Publish afterward.`,{title:"Apply trench dates",okText:"Apply"}))) return;
+  const payloads=list.map(a=>{ const it=itemById(a.id); const base=it.draft||it.pub;
     const data=JSON.parse(JSON.stringify(base.data||{})); data.f=data.f||{}; data.f.trench_date=a.dateStr;
     return { community_id:it.id, division:"orlando", status:"draft", source:base.source||"CIS",
       name:base.name||null, jde:base.jde||null, project_name:base.project_name||null, hub:base.hub||null,
@@ -662,8 +671,8 @@ async function applyChecklist(logln){
   for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
     const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"}); if(!error) ok+=batch.length; }
   if($("clPreview")) $("clPreview").innerHTML=`<div class="note ok" style="margin-top:12px">Updated ${ok} CIS as drafts. Use "Publish all drafts" to make them live.</div>`;
-  if(logln) logln(`Applied trench dates to ${ok} CIS (drafts).`,"ok");
-  await loadAll(); updateCounts();
+  if(_clLog) _clLog(`Applied trench dates to ${ok} CIS (drafts).`,"ok");
+  _clPv=null; await loadAll(); updateCounts();
 }
 
 /* Some sheets cram elevations + New Plan into the Plan Name cell, e.g.
@@ -746,42 +755,6 @@ async function publishAllDrafts(logln){
   for(const id of ids){ const { data,error }=await sb.rpc("cdb_publish",{p_community_id:id}); if(!error&&data&&data.ok) ok++; }
   if(logln) logln(`Published ${ok} of ${ids.length} drafts.`, ok===ids.length?"ok":"warn");
   await loadAll(); render();
-}
-
-/* ---- PDF import (best-effort) → new data model ---- */
-async function importPdfs(files, logln){
-  if(!window.pdfjsLib){ logln("PDF library not loaded.","err"); return; }
-  for(const f of files){
-    logln("Reading "+f.name+"…");
-    try{
-      const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
-      let text=""; for(let p=1;p<=pdf.numPages;p++){ const pg=await pdf.getPage(p); const c=await pg.getTextContent(); text+=c.items.map(i=>i.str).join(" ")+"\n"; }
-      const F=extractCISfields(text);
-      const data={ f:F, plans:[], note:"", extra:{} };
-      const I=SCHEMA.IDENTITY;
-      const row={ community_id:uid(), status:"draft", source:"CIS", name:F[I.name]||f.name.replace(/\.pdf$/i,""),
-        jde:F[I.jde]||null, project_name:F[I.project]||null, hub:F[I.product]||null, needs_review:true, data };
-      await saveDraft(row);
-      logln("Draft created: "+(row.name||f.name)+" — review before publishing.","ok");
-    }catch(e){ logln("Failed on "+f.name+": "+(e.message||e),"err"); }
-  }
-  await loadAll(); render();
-}
-function extractCISfields(text){
-  const f={}; const grab=(re)=>{ const m=text.match(re); return m?m[1].trim().replace(/\s{2,}/g," "):""; };
-  const set=(k,v)=>{ if(v) f[k]=v; };
-  set("community_name", grab(/Community Name[:\s]+([^\n]+?)(?:JDE|Project|Division|$)/i));
-  set("project_name",  grab(/Project Name[:\s]+([^\n]+?)(?:JDE|Community|Division|$)/i));
-  set("jde",           grab(/JDE(?:\s*Community)?\s*#?[:\s]+(\d{6,8})/i));
-  set("municipality",  grab(/Municipality[:\s]+([^\n]+?)(?:City|County|$)/i));
-  set("city_state_zip",grab(/City[,\s].*?Zip[:\s]+([^\n]+?)(?:Owning|Revision|$)/i));
-  set("developer",     grab(/Developer[:\s]+([^\n]+?)(?:Total|Owning|Owner|$)/i));
-  set("owning_entity", grab(/Owning Entity[:\s]+([^\n]+?)(?:Municipality|$)/i));
-  set("total_hs",      grab(/Total HS[^:]*[:\s]+([0-9]+)/i));
-  set("homesite_avg",  grab(/Homesite\s*AVG\s*Size[:\s]+([^\n]+?)(?:Community|Base|$)/i));
-  set("base_spec",     grab(/Base Spec[:\s]+([^\n]+?)(?:Product|BuildPro|$)/i));
-  set("product_type",  grab(/Product Type[:\s]+([^\n]+?)(?:Developer|$)/i));
-  return f;
 }
 
 /* ---------------- ADMIN: reset link + roles ---------------- */
