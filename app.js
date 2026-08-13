@@ -24,6 +24,41 @@ const isEditor = () => state.role==="editor" || state.role==="admin";
 const isAdmin  = () => state.role==="admin";
 const making   = () => state.mode==="make" && isEditor();
 
+/* ---------------- custom modal dialogs (replace browser prompt/confirm/alert) ---------------- */
+function openModal({title, body, buttons}){
+  return new Promise(resolve=>{
+    const scrim=document.createElement("div"); scrim.className="modal-scrim";
+    const card=document.createElement("div"); card.className="modal-card";
+    card.innerHTML=`<div class="modal-h">${esc(title||"")}</div><div class="modal-b">${body||""}</div><div class="modal-f"></div>`;
+    const foot=card.querySelector(".modal-f");
+    const close=v=>{ document.removeEventListener("keydown",onKey); scrim.remove(); resolve(v); };
+    (buttons||[]).forEach(b=>{ const btn=document.createElement("button");
+      btn.className="modal-btn"+(b.primary?" primary":"")+(b.danger?" danger":"");
+      btn.textContent=b.label;
+      btn.onclick=()=>close(typeof b.value==="function"?b.value(card):b.value);
+      foot.appendChild(btn); });
+    scrim.appendChild(card); document.body.appendChild(scrim);
+    scrim.addEventListener("mousedown",e=>{ if(e.target===scrim) close(undefined); });
+    const onKey=e=>{ if(e.key==="Escape") close(undefined); };
+    document.addEventListener("keydown",onKey);
+    const inp=card.querySelector("input,textarea");
+    const primary=foot.querySelector(".modal-btn.primary");
+    if(inp){ inp.focus(); if(inp.select) inp.select();
+      inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&inp.tagName!=="TEXTAREA"){ e.preventDefault(); primary&&primary.click(); } }); }
+  });
+}
+function uiAlert(message,title){ return openModal({title:title||"Community-DB",body:`<p>${esc(message)}</p>`,buttons:[{label:"OK",value:true,primary:true}]}); }
+function uiConfirm(message,opts){ opts=opts||{};
+  return openModal({title:opts.title||"Please confirm",body:`<p>${esc(message)}</p>`,
+    buttons:[{label:opts.cancelText||"Cancel",value:false},{label:opts.okText||"OK",value:true,primary:!opts.danger,danger:!!opts.danger}]
+  }).then(v=>v===true); }
+function uiPrompt(label,opts){ opts=opts||{};
+  return openModal({title:opts.title||"Enter a value",
+    body:`<label class="fld">${esc(label)}</label><input type="text" class="modal-input" placeholder="${esc(opts.placeholder||"")}" value="${esc(opts.value||"")}">`,
+    buttons:[{label:opts.cancelText||"Cancel",value:null},
+             {label:opts.okText||"Save",primary:true,value:card=>{ const el=card.querySelector(".modal-input"); return el?el.value.trim():null; }}]
+  }); }
+
 /* theme */
 (function(){ try{ const t=localStorage.getItem("cdb_theme"); if(t) document.documentElement.setAttribute("data-theme",t); }catch(e){} })();
 function toggleTheme(){ const d=document.documentElement.getAttribute("data-theme")==="dark"; const n=d?"light":"dark";
@@ -345,24 +380,26 @@ async function saveDraft(row){
     source:row.source||"manual", model_start:row.model_start||null, needs_review:!!row.needs_review,
     data:row.data||{}, updated_at:row.updated_at, updated_by:row.updated_by };
   const { error } = await sb.from("cdb_cis").upsert(payload,{onConflict:"id"});
-  if(error){ console.error(error); alert("Save failed: "+error.message); }
+  if(error){ console.error(error); uiAlert("Save failed: "+error.message,"Couldn't save"); }
 }
 function refreshItemMeta(id){ const it=itemById(id); const row=it.draft||it.pub; if(row){ it.name=row.name||""; it.jde=row.jde||""; it.hub=row.hub||""; }
   const l=$("list"); if(l){ const r=l.querySelector(`.row[data-id="${id}"] .nm`); if(r) r.textContent=it.name||"(untitled)"; } }
 async function newCommunity(){
-  const name=prompt("New community name:"); if(name==null) return;
+  const name=await uiPrompt("Community name",{title:"New community",okText:"Create",placeholder:"e.g. Bronson's Ridge"});
+  if(name==null||!name.trim()) return;
   const row={ id:uid(), community_id:uid(), status:"draft", source:"manual", name:name.trim(),
     data:{ n:name.trim() } };
   await saveDraft(row); await loadAll(); render(); openDetail(row.community_id);
 }
 async function startDraft(id){ await ensureDraft(id); await loadAll(); render(); openDetail(id); }
-async function discardDraft(id){ if(!confirm("Discard this draft? The published version stays live.")) return;
+async function discardDraft(id){
+  if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
   await sb.from("cdb_cis").delete().eq("community_id",id).eq("status","draft"); await loadAll(); render();
   const still=itemById(id); if(still) openDetail(id); }
 async function publish(id){
-  if(!confirm("Publish this draft? It becomes the live version for all viewers.")) return;
+  if(!(await uiConfirm("Publish this draft? It becomes the live version for all viewers.",{title:"Publish community",okText:"Publish"}))) return;
   const { data,error } = await sb.rpc("cdb_publish",{p_community_id:id});
-  if(error||(data&&!data.ok)){ alert("Publish failed: "+((error&&error.message)||(data&&data.error))); return; }
+  if(error||(data&&!data.ok)){ uiAlert("Publish failed: "+((error&&error.message)||(data&&data.error)),"Publish failed"); return; }
   await loadAll(); render(); openDetail(id);
 }
 
@@ -396,7 +433,7 @@ async function uploadImages(id, files){
       if(error) throw error;
       const rec={ id:uid(), community_id:id, path, caption:f.name.replace(/\.[^.]+$/,""), sort_order:(state.imgs[id]||[]).length, published:false, w, h, created_by:state.email };
       const { error:e2 } = await sb.from("cdb_images").insert(rec); if(e2) throw e2;
-    }catch(e){ alert("Image upload failed: "+(e.message||e)); }
+    }catch(e){ uiAlert("Image upload failed: "+(e.message||e),"Upload failed"); }
   }
   await loadAll(); openDetail(id);
   // wire caption edits + delete after re-render
@@ -404,7 +441,7 @@ async function uploadImages(id, files){
   $("detail").querySelectorAll("[data-imgdel]").forEach(b=>b.onclick=()=>delImage(id,b.dataset.imgdel));
 }
 async function saveCaption(imgId,cap){ await sb.from("cdb_images").update({caption:cap}).eq("id",imgId); }
-async function delImage(id,imgId){ if(!confirm("Delete this image?")) return;
+async function delImage(id,imgId){ if(!(await uiConfirm("Delete this image?",{title:"Delete image",okText:"Delete",danger:true}))) return;
   const im=(state.imgs[id]||[]).find(x=>x.id===imgId);
   if(im){ try{ await sb.storage.from(CFG.IMAGE_BUCKET).remove([im.path]); }catch(e){} }
   await sb.from("cdb_images").delete().eq("id",imgId); await loadAll(); openDetail(id); }
@@ -428,7 +465,7 @@ function renderNotes(a){
   const paint=()=>{ const q=lc($("nq").value), f=$("nFilter").value;
     let ns=state.notes.filter(n=>(!f||n.community_id===f)&&(!q||[n.subject,n.body,n.attendees,nameOf(n.community_id),n.note_date].some(x=>lc(x).includes(q))));
     $("noteList").innerHTML= ns.length? `<table>`+ns.map(n=>`<tr><td class="k">${esc(n.note_date||"")}<div class="hint">${esc(n.subject||"")}</div>${n.community_id?`<div class="pill cis" style="margin-top:4px">${esc(nameOf(n.community_id))}</div>`:""}</td><td class="v">${esc(n.body||"")}${n.attendees?`<div class="hint">Attendees: ${esc(n.attendees)}</div>`:""}${isEditor()?`<div><button class="rowdel" data-ndel="${n.id}">Delete</button></div>`:""}</td></tr>`).join("")+`</table>` : `<div class="empty">No notes.</div>`;
-    $("noteList").querySelectorAll("[data-ndel]").forEach(b=>b.onclick=async()=>{ if(confirm("Delete this note?")){ await sb.from("cdb_notes").delete().eq("id",b.dataset.ndel); await loadAll(); paint(); updateCounts(); } });
+    $("noteList").querySelectorAll("[data-ndel]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Delete this note?",{title:"Delete note",okText:"Delete",danger:true})){ await sb.from("cdb_notes").delete().eq("id",b.dataset.ndel); await loadAll(); paint(); updateCounts(); } });
   };
   $("nq").addEventListener("input",paint); $("nFilter").addEventListener("change",paint); paint();
   if(canAdd) $("nAdd").onclick=async()=>{
@@ -555,7 +592,7 @@ async function renderPerms(){
       <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
       <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")||`<tr><td colspan="3" class="empty">No roles yet.</td></tr>`}</table></div>`;
   p.querySelectorAll("[data-role]").forEach(s=>s.onchange=async()=>{ await sb.from("cdb_app_roles").upsert({email:s.dataset.role,role:s.value},{onConflict:"email"}); });
-  p.querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=async()=>{ if(confirm("Remove "+b.dataset.rmuser+"'s role? (They become a viewer.)")){ await sb.from("cdb_app_roles").delete().eq("email",b.dataset.rmuser); renderPerms(); } });
+  p.querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Remove "+b.dataset.rmuser+"'s role? They become a viewer.",{title:"Remove role",okText:"Remove",danger:true})){ await sb.from("cdb_app_roles").delete().eq("email",b.dataset.rmuser); renderPerms(); } });
 }
 
 /* ---------------- BOOTSTRAP ---------------- */

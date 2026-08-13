@@ -28,8 +28,11 @@ create or replace function public.cdb_email() returns text
 create or replace function public.cdb_is_lennar() returns boolean
   language sql stable as $$ select public.cdb_email() like '%@lennar.com' $$;
 
+-- SECURITY DEFINER so the read of cdb_app_roles bypasses RLS. Without this the
+-- cdb_app_roles read policy (which calls this function) would recurse endlessly
+-- ("stack depth limit exceeded").
 create or replace function public.cdb_role() returns text
-  language sql stable as $$
+  language sql stable security definer set search_path = public as $$
     select coalesce((select role from public.cdb_app_roles where email = public.cdb_email()), 'viewer')
   $$;
 

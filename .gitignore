@@ -1,3 +1,6 @@
 node_modules/
 *.local
 .DS_Store
+
+# Backend SQL — kept local, not published to the public Pages repo
+*.sql
