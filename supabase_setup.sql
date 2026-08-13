@@ -207,6 +207,45 @@ declare p public.cdb_cis; begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- Unpublish: remove a community from the live viewer side and return it to a
+-- draft. If a draft already exists it becomes the working copy (the published
+-- row is dropped); otherwise the published row is converted to a draft.
+-- Images for the community are hidden from viewers again.
+create or replace function public.cdb_unpublish(p_community_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  if not public.cdb_is_editor() then
+    return jsonb_build_object('ok', false, 'error', 'Not authorized.');
+  end if;
+  if not exists (select 1 from public.cdb_cis where community_id = p_community_id and status='published') then
+    return jsonb_build_object('ok', false, 'error', 'Nothing published to unpublish.');
+  end if;
+  if exists (select 1 from public.cdb_cis where community_id = p_community_id and status='draft') then
+    delete from public.cdb_cis where community_id = p_community_id and status='published';
+  else
+    update public.cdb_cis set status='draft', published_at=null, updated_at=now(), updated_by=public.cdb_email()
+      where community_id = p_community_id and status='published';
+  end if;
+  update public.cdb_images set published=false where community_id = p_community_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Delete a community entirely: draft + published + revisions + image rows.
+-- Returns the image storage paths so the client can remove the files too.
+create or replace function public.cdb_delete_community(p_community_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_paths text[]; begin
+  if not public.cdb_is_editor() then
+    return jsonb_build_object('ok', false, 'error', 'Not authorized.');
+  end if;
+  select coalesce(array_agg(path), '{}') into v_paths
+    from public.cdb_images where community_id = p_community_id;
+  delete from public.cdb_images        where community_id = p_community_id;
+  delete from public.cdb_cis_revisions where community_id = p_community_id;
+  delete from public.cdb_cis           where community_id = p_community_id;
+  return jsonb_build_object('ok', true, 'paths', to_jsonb(v_paths));
+end $$;
+
 /* ---------------------------------------- user admin (reset-link flow) ----
    Self-contained (cdb_-scoped) copy of the add-user / password-reset flow used
    by the other portals. No email is sent — the admin shares the one-time link.

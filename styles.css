@@ -36,6 +36,8 @@ input:focus{border-color:var(--blue)}
 .btn.ghost{background:#fff;color:var(--blue);border:1.5px solid var(--line)}
 .btn.mini{width:auto;padding:8px 13px;font-size:13px;border-radius:8px}
 .btn.solid{background:#ffd452;color:#3a2d00}
+.btn.danger{background:#fff;color:var(--red);border:1.5px solid var(--red)}
+.btn.danger:hover{background:var(--redbg)}
 .msg{margin-top:14px;font-size:13.5px;padding:0;border-radius:9px}
 .msg.err{background:var(--redbg);color:var(--red);padding:10px 12px}
 .msg.ok{background:var(--greenbg);color:var(--green);padding:10px 12px}

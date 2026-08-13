@@ -248,10 +248,13 @@ function openDetail(id){
   const row=shownRow(it); const d=row?row.data||{}:{};
   const editing = making();
   const acts=[];
+  acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; Export .xlsx</button>`);
   if(editing){
     if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish</button>`);
       acts.push(`<button class="btn mini ghost" id="btnDiscard">Discard draft</button>`); }
     else if(it.hasPub){ acts.push(`<button class="btn mini" id="btnEdit">Edit</button>`); }
+    if(it.hasPub) acts.push(`<button class="btn mini ghost" id="btnUnpublish">Unpublish</button>`);
+    acts.push(`<button class="btn mini danger" id="btnDelete">Delete</button>`);
   }
   const statusLine = editing
     ? (it.hasDraft?`<span class="pill draft">Editing draft</span>`:"")+(it.hasPub?` <span class="pill pub">Live version published</span>`:` <span class="pill draft">Not yet published</span>`)
@@ -275,10 +278,13 @@ function openDetail(id){
     tn.map(n=>`<tr><td class="k">${esc(n.note_date||"")}<div class="hint">${esc(n.subject||"")}</div></td><td class="v">${esc(n.body||"")}${n.attendees?`<div class="hint">Attendees: ${esc(n.attendees)}</div>`:""}</td></tr>`).join("")+`</table>`; }
 
   $("detail").innerHTML=h;
+  if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
   if(editing){
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
     if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
     if($("btnEdit"))    $("btnEdit").onclick=()=>startDraft(id);
+    if($("btnUnpublish")) $("btnUnpublish").onclick=()=>unpublish(id);
+    if($("btnDelete"))  $("btnDelete").onclick=()=>deleteCommunity(id);
     wireEditables(id);
     const ia=$("detail").querySelector("[data-imgadd]"); if(ia) ia.onclick=()=>pickImages(id);
     $("detail").querySelectorAll("[data-capedit]").forEach(inp=>inp.onchange=()=>saveCaption(inp.dataset.capedit,inp.value));
@@ -363,6 +369,40 @@ async function setPath(id,path,value){
 async function plAdd(id,key){ const row=await ensureDraft(id); const d=row.data=row.data||{}; const arr=d[key]=d[key]||[]; arr.push(["","","",""]); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); const d=row.data||{}; const sec=SCHEMA.sections.find(s=>s.type==="table"); const arr=d[sec.key]||[]; arr.splice(ri,1); await saveDraft(row); openDetail(id); }
 
+/* ---------- export a CIS to .xlsx ---------- */
+function exportCIS(id){
+  if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
+  const it=itemById(id); const row=shownRow(it); if(!row){ return; }
+  const d=row.data||{};
+  const aoa=[];
+  aoa.push([row.name||"(untitled)"]);
+  aoa.push(["Community Information Sheet"+(row.status?" — "+row.status:"")]);
+  aoa.push([]);
+  aoa.push(["FIELD","VALUE"]);
+  SCHEMA.identity.forEach(f=> aoa.push([f.label, val(d,f.k)]));
+  aoa.push([]);
+  SCHEMA.sections.forEach(sec=>{
+    aoa.push([sec.title.toUpperCase()]);
+    if(sec.type==="kv"){ sec.fields.forEach(f=> aoa.push([f.label, val(d,f.k)])); }
+    else if(sec.type==="kvgroup"){ const g=d[sec.key]||{}; sec.fields.forEach(f=> aoa.push([f.label, g[f.k]==null?"":String(g[f.k])])); }
+    else if(sec.type==="table"){ const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
+      aoa.push(sec.columns.slice()); arr.forEach(r=> aoa.push(sec.columns.map((c,ci)=>r[ci]||""))); }
+    else if(sec.type==="notes"){ aoa.push(["Notes", val(d,sec.textKey)]);
+      const an=Array.isArray(d[sec.listKey])?d[sec.listKey]:[]; if(an.length) aoa.push([sec.listLabel, an.join("\n")]);
+      const w=Array.isArray(d[sec.caveatKey])?d[sec.caveatKey]:[]; if(w.length) aoa.push([sec.caveatLabel, w.join("\n")]); }
+    aoa.push([]);
+  });
+  const imgs=state.imgs[id]||[];
+  if(imgs.length){ aoa.push(["IMAGES"]); imgs.forEach(im=> aoa.push([im.caption||"(no caption)", im.path])); }
+
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"]=[{wch:32},{wch:72}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "CIS");
+  const safe=(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40);
+  XLSX.writeFile(wb, `CIS_${safe}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 /* ---------- draft / publish ---------- */
 async function ensureDraft(id){
   const it=itemById(id); if(it&&it.draft) return it.draft;
@@ -396,6 +436,23 @@ async function discardDraft(id){
   if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
   await sb.from("cdb_cis").delete().eq("community_id",id).eq("status","draft"); await loadAll(); render();
   const still=itemById(id); if(still) openDetail(id); }
+async function unpublish(id){
+  if(!(await uiConfirm("Unpublish this community? It will be hidden from viewers and returned to a draft. You can publish it again later.",
+      {title:"Unpublish community",okText:"Unpublish",danger:true}))) return;
+  const { data,error } = await sb.rpc("cdb_unpublish",{p_community_id:id});
+  if(error||(data&&!data.ok)){ uiAlert("Unpublish failed: "+((error&&error.message)||(data&&data.error)),"Unpublish failed"); return; }
+  await loadAll(); render(); if(itemById(id)) openDetail(id); else state.sel=null;
+}
+async function deleteCommunity(id){
+  const it=itemById(id); const nm=(it&&it.name)||"this community";
+  if(!(await uiConfirm(`Delete "${nm}" completely? This removes its draft, published version, all revisions and images, and cannot be undone.`,
+      {title:"Delete community",okText:"Delete permanently",danger:true}))) return;
+  const { data,error } = await sb.rpc("cdb_delete_community",{p_community_id:id});
+  if(error||(data&&!data.ok)){ uiAlert("Delete failed: "+((error&&error.message)||(data&&data.error)),"Delete failed"); return; }
+  const paths=(data&&data.paths)||[];
+  if(paths.length){ try{ await sb.storage.from(CFG.IMAGE_BUCKET).remove(paths); }catch(e){} }
+  state.sel=null; await loadAll(); render();
+}
 async function publish(id){
   if(!(await uiConfirm("Publish this draft? It becomes the live version for all viewers.",{title:"Publish community",okText:"Publish"}))) return;
   const { data,error } = await sb.rpc("cdb_publish",{p_community_id:id});
