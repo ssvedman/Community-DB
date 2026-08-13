@@ -379,25 +379,48 @@ async function setPath(id,path,value){
 async function plAdd(id){ const row=await ensureDraft(id); const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
 
-/* ---------- export a CIS to .xlsx (mirrors the workbook layout) ---------- */
-function cisAOA(row){
-  const d=row.data||{}; const aoa=[]; aoa.push([row.name||"(untitled)"]);
-  SCHEMA.SECTIONS.forEach(sec=>{
-    aoa.push([]); aoa.push([sec.title]);
-    if(sec.kind==="kv"){ sec.fields.forEach(f=> aoa.push([f.label, fval(d,f.k)]));
-      ((d.extra&&d.extra[sec.id])||[]).forEach(pr=> aoa.push([pr[0], pr[1]||""])); }
-    else if(sec.kind==="plans"){ aoa.push(SCHEMA.PLAN_COLS.slice());
-      (d.plans||[]).forEach(r=> aoa.push(SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||""))); }
-    else if(sec.kind==="note"){ aoa.push([d.note==null?"":String(d.note)]); }
-  });
-  if(d.meta){ aoa.push([]); aoa.push([String(d.meta)]); }
-  return aoa;
-}
+/* ---------- export a CIS to a themed .xlsx (matches the PDF styling) ---------- */
 function exportCIS(id){
   if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
-  const it=itemById(id); const row=shownRow(it); if(!row) return;
-  const ws=XLSX.utils.aoa_to_sheet(cisAOA(row));
-  ws["!cols"]=[{wch:34},{wch:66},{wch:22},{wch:16},{wch:24}];
+  const it=itemById(id); const row=shownRow(it); if(!row) return; const d=row.data||{};
+  const NC=5;
+  const BORDER={ style:"thin", color:{rgb:"D8DEE8"} }, BOX={top:BORDER,bottom:BORDER,left:BORDER,right:BORDER};
+  const stTitle ={ font:{bold:true, sz:15, color:{rgb:"1F3864"}} };
+  const stSection={ font:{bold:true, sz:11, color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"2E5C8A"}}, alignment:{vertical:"center"} };
+  const stKey    ={ font:{bold:true, sz:10, color:{rgb:"42536E"}}, fill:{fgColor:{rgb:"F4F6FA"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stVal    ={ font:{sz:10, color:{rgb:"16233A"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stPHdr   ={ font:{bold:true, sz:9, color:{rgb:"42536E"}}, fill:{fgColor:{rgb:"F4F6FA"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stPCell  ={ font:{sz:9, color:{rgb:"16233A"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stMeta   ={ font:{italic:true, sz:9, color:{rgb:"6B7794"}} };
+
+  const ws={}, merges=[]; let R=0; const range={s:{r:0,c:0},e:{r:0,c:NC-1}};
+  const put=(r,c,v,s)=>{ ws[XLSX.utils.encode_cell({r,c})]={t:"s", v:(v==null?"":String(v)), s}; if(r>range.e.r) range.e.r=r; };
+  const fullRow=(v,s)=>{ put(R,0,v,s); for(let c=1;c<NC;c++) put(R,c,"",s); merges.push({s:{r:R,c:0},e:{r:R,c:NC-1}}); R++; };
+  const kv=(label,val)=>{ put(R,0,label,stKey); put(R,1,val,stVal); for(let c=2;c<NC;c++) put(R,c,"",stVal); merges.push({s:{r:R,c:1},e:{r:R,c:NC-1}}); R++; };
+
+  fullRow(row.name||"(untitled)", stTitle); R++;   // title + blank row
+  SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.kind==="kv"){
+      const fields=sec.fields.filter(f=>fval(d,f.k)); const ex=(d.extra&&d.extra[sec.id])||[];
+      if(!fields.length && !ex.length) return;
+      fullRow(sec.title, stSection);
+      fields.forEach(f=>kv(f.label, fval(d,f.k)));
+      ex.forEach(pr=>kv(pr[0], pr[1]||"")); R++;
+    } else if(sec.kind==="plans"){
+      const arr=d.plans||[]; if(!arr.length) return;
+      fullRow(sec.title, stSection);
+      SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stPHdr)); R++;
+      arr.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stPCell)); R++; }); R++;
+    } else if(sec.kind==="note"){
+      const t=d.note==null?"":String(d.note); if(!t) return;
+      fullRow(sec.title, stSection); fullRow(t, stVal); R++;
+    }
+  });
+  if(d.meta){ R++; fullRow(String(d.meta), stMeta); }
+
+  ws["!ref"]=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:Math.max(R-1,0),c:NC-1}});
+  ws["!merges"]=merges;
+  ws["!cols"]=[{wch:32},{wch:54},{wch:22},{wch:14},{wch:22}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "CIS");
   XLSX.writeFile(wb, `CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
