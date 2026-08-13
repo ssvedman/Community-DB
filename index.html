@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Community-DB — Orlando Division</title>
+<link rel="icon" href="logo.svg">
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+
+<!-- ===================== AUTH ===================== -->
+<div id="auth">
+  <div class="auth-card">
+    <div class="brand"><img class="auth-logo" src="logo.svg" alt="Community-DB">
+      <h1>Community-DB</h1></div>
+    <p class="auth-sub">Sign in with your Lennar email and password to view community information.</p>
+    <div id="stepSignin">
+      <label class="fld" for="email">Work email</label>
+      <input type="email" id="email" placeholder="you@lennar.com" autocomplete="email">
+      <label class="fld" for="password" style="margin-top:12px">Password</label>
+      <input type="password" id="password" placeholder="Your password" autocomplete="current-password">
+      <button class="btn" id="signinBtn" style="margin-top:14px">Sign in</button>
+    </div>
+    <div id="stepRecover" class="hidden">
+      <label class="fld" for="newPass">New password</label>
+      <input type="password" id="newPass" placeholder="At least 8 characters" autocomplete="new-password">
+      <label class="fld" for="newPass2" style="margin-top:12px">Confirm password</label>
+      <input type="password" id="newPass2" placeholder="Re-enter password" autocomplete="new-password">
+      <button class="btn" id="setPassBtn" style="margin-top:14px">Set password</button>
+    </div>
+    <div id="authMsg" class="msg"></div>
+    <p class="tiny">Access limited to Lennar associates. Need access or a password reset? Contact the portal admin.</p>
+  </div>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="topbar-in">
+      <button class="home-logo" id="homeLogo" title="Home"><img src="logo.svg" alt="Community-DB — home"></button>
+      <span class="title">Community-DB <span class="sub">Orlando Division</span></span>
+      <div class="spacer"></div>
+      <span class="mode-toggle hidden" id="modeToggle">
+        <button class="mode on" data-mode="view">Viewer</button>
+        <button class="mode" data-mode="make">Maker</button>
+      </span>
+      <span class="user-chip" id="userChip"></span>
+      <button class="linkbtn" id="themeBtn" title="Toggle light/dark">Dark</button>
+      <button class="linkbtn hidden" id="adminLink">Admin</button>
+      <button class="linkbtn hidden" id="dashLink">← Back</button>
+      <button class="linkbtn" id="logoutBtn">Sign out</button>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-view="browse">Communities <span class="count" id="cBrowse"></span></button>
+      <button class="tab editoronly" data-view="gaps">Gaps <span class="count" id="cGaps"></span></button>
+      <button class="tab editoronly" data-view="add">Add / import</button>
+      <button class="tab" data-view="notes">Meeting Notes <span class="count" id="cNotes"></span></button>
+      <button class="tab" data-view="about">About</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="dashboard">
+      <div id="viewArea"></div>
+    </section>
+
+    <section id="admin" class="hidden">
+      <h2 style="color:var(--navy)">Admin</h2>
+      <div class="admin-layout">
+        <div id="resetPanel"></div>
+        <div id="permsPanel"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-foot">
+    <span>Community-DB</span>
+    <span class="dot">&middot;</span>
+    <a href="mailto:stephen.svedman@lennar.com?subject=Community-DB%20feedback" id="feedbackLink">Send feedback</a>
+  </footer>
+</div>
+
+<!-- lightbox for images -->
+<div class="lightbox" id="lightbox"><img id="lbImg" alt=""><div class="cp" id="lbCap"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="config.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
