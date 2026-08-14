@@ -280,11 +280,15 @@ declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; beg
     v_uid := gen_random_uuid();
     insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
                             email_confirmed_at, created_at, updated_at,
-                            raw_app_meta_data, raw_user_meta_data)
+                            raw_app_meta_data, raw_user_meta_data,
+                            confirmation_token, recovery_token, email_change,
+                            email_change_token_new, email_change_token_current,
+                            phone_change, phone_change_token, reauthentication_token)
     values (v_uid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
             v_email, crypt(gen_random_uuid()::text, gen_salt('bf')),
             now(), now(), now(),
-            '{"provider":"email","providers":["email"]}', '{}');
+            '{"provider":"email","providers":["email"]}', '{}',
+            '', '', '', '', '', '', '', '');   -- GoTrue requires these to be '' (not NULL)
   end if;
 
   insert into public.cdb_app_roles (email, role)
