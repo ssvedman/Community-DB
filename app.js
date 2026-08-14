@@ -588,7 +588,8 @@ async function delImage(id,imgId){ if(!(await uiConfirm("Delete this image?",{ti
 function isGap(v){ const s=lc(v).trim(); return !s || s==="tbd" || s==="tbd in source"; }
 function gapRows(){
   const rows=[];
-  state.items.forEach(it=>{ if(!it.active) return; const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
+  // reflect whatever's currently displayed (search + inactive/drafts filters)
+  visibleItems().forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
     SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
       sec.fields.forEach(fl=>{ if(fl.readonly) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
@@ -596,7 +597,7 @@ function gapRows(){
   return rows;
 }
 function renderGaps(a){
-  a.innerHTML=`<div class="note"><b>Gaps</b> are CIS fields that are still empty or marked TBD. Fill them in on a community's page and they clear here.</div>
+  a.innerHTML=`<div class="note"><b>Gaps</b> are CIS fields that are still empty or marked TBD. Fill them in on a community's page and they clear here. Reflects your current search and filters from the Communities tab.</div>
     <div class="bar"><input type="search" id="gq" placeholder="Filter by community or field…"><select id="gStatus"><option value="">All statuses</option><option>Missing</option><option>TBD in source</option></select><span class="hint" id="gShown"></span></div>
     <div class="panel"><div id="gapsTable"></div></div>`;
   const paint=()=>{ const q=lc($("gq").value), st=$("gStatus").value;
