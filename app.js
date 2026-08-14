@@ -380,18 +380,22 @@ function beginEdit(sp,id){
   inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!long){ e.preventDefault(); done(true);} else if(e.key==="Escape") done(false); });
   inp.addEventListener("blur",()=>done(true));
 }
-// Date fields: free typing (any text, incl. "TBD") + a calendar picker; saved as M.D.YY.
+// Date fields: one text box (free typing, incl. "TBD") with a calendar button in
+// the corner that opens a native picker. Always saved as M.D.YY.
 function beginDateEdit(sp,id,path,cur){
   const wrap=document.createElement("span"); wrap.className="ev-date";
   const txt=document.createElement("input"); txt.type="text"; txt.className="ed-in"; txt.value=cur||""; txt.placeholder="M.D.YY or TBD";
-  const cal=document.createElement("input"); cal.type="date"; cal.className="ed-cal"; cal.title="Pick a date";
-  const iso=dateToISO(cur); if(iso) cal.value=iso;
-  wrap.appendChild(txt); wrap.appendChild(cal); sp.replaceWith(wrap); txt.focus(); txt.select();
+  const btn=document.createElement("button"); btn.type="button"; btn.className="ed-calbtn"; btn.title="Pick a date";
+  btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>';
+  const cal=document.createElement("input"); cal.type="date"; cal.className="ed-calhidden"; const iso=dateToISO(cur); if(iso) cal.value=iso;
+  wrap.appendChild(txt); wrap.appendChild(btn); wrap.appendChild(cal);
+  sp.replaceWith(wrap); txt.focus(); txt.select();
   let done=false;
   const finish=async(save)=>{ if(done) return; done=true; if(save){ await setPath(id,path,txt.value); } openDetail(id); };
-  cal.addEventListener("change",()=>{ if(cal.value) txt.value=isoToDate(cal.value); txt.focus(); });
+  btn.addEventListener("click",()=>{ try{ cal.showPicker(); }catch(e){ cal.focus(); cal.click(); } });
+  cal.addEventListener("change",()=>{ if(cal.value){ txt.value=isoToDate(cal.value); finish(true); } });
   txt.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); finish(true);} else if(e.key==="Escape") finish(false); });
-  wrap.addEventListener("focusout",()=>setTimeout(()=>{ if(!wrap.contains(document.activeElement)) finish(true); },120));
+  wrap.addEventListener("focusout",()=>setTimeout(()=>{ if(!wrap.contains(document.activeElement)) finish(true); },150));
 }
 function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; const d=(row&&row.data)||{};
   const p=path.split("."); const kind=p[0];
@@ -622,15 +626,16 @@ function gapRows(){
 }
 function renderGaps(a){
   a.innerHTML=`<div class="note"><b>Gaps</b> are CIS fields that are still empty or marked TBD. Fill them in on a community's page and they clear here. Reflects your current search and filters from the Communities tab.</div>
-    <div class="bar"><input type="search" id="gq" placeholder="Filter by community or field…"><select id="gStatus"><option value="">All statuses</option><option>Missing</option><option>TBD in source</option></select><span class="hint" id="gShown"></span></div>
+    <div class="bar"><input type="search" id="q" placeholder="Search name, JDE, plan #, or any field…" value="${esc(state.q)}"><select id="gStatus"><option value="">All statuses</option><option>Missing</option><option>TBD in source</option></select><span class="hint" id="gShown"></span></div>
     <div class="panel"><div id="gapsTable"></div></div>`;
-  const paint=()=>{ const q=lc($("gq").value), st=$("gStatus").value;
-    let rs=gapRows().filter(r=>(!st||r.status===st)&&(!q||lc(r.name).includes(q)||lc(r.field).includes(q)));
+  const paint=()=>{ const st=$("gStatus").value;
+    let rs=gapRows().filter(r=>!st||r.status===st);   // gapRows already honors the shared search via visibleItems()
     $("gShown").textContent=`${rs.length} gaps`;
-    $("gapsTable").innerHTML= rs.length? `<table><tr><th>Community</th><th>Field</th><th>Status</th></tr>`+rs.map(r=>`<tr><td><a href="#" data-goto="${r.id}">${esc(r.name)}</a></td><td>${esc(r.field)}</td><td>${esc(r.status)}</td></tr>`).join("")+`</table>`:`<div class="empty">No gaps 🎉</div>`;
+    $("gapsTable").innerHTML= rs.length? `<table><tr><th>Community</th><th>Field</th><th>Status</th></tr>`+rs.map(r=>`<tr><td><a href="#" data-goto="${r.id}">${esc(r.name)}</a></td><td>${esc(r.field)}</td><td>${esc(r.status)}</td></tr>`).join("")+`</table>`:`<div class="empty">No gaps.</div>`;
     $("gapsTable").querySelectorAll("[data-goto]").forEach(a2=>a2.onclick=e=>{ e.preventDefault(); state.view="browse"; setTab(); state.sel=a2.dataset.goto; render(); openDetail(a2.dataset.goto); });
   };
-  $("gq").addEventListener("input",paint); $("gStatus").addEventListener("change",paint); paint();
+  $("q").addEventListener("input",e=>{ state.q=e.target.value; $("cBrowse").textContent=visibleItems().length; paint(); });
+  $("gStatus").addEventListener("change",paint); paint();
 }
 
 /* ---------------- ADD / IMPORT (editor) ---------------- */
