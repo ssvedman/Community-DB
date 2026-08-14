@@ -18,6 +18,13 @@ const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id"+Date.now()+Math.random().toString(16).slice(2));
+// date helpers — canonical display format is M.D.YY
+const DATE_KEYS = { date:1, trench_date:1 };
+function normDate(s){ const m=String(s==null?"":s).trim().match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
+  if(!m) return String(s==null?"":s).trim(); let y=(+m[3])%100; return `${+m[1]}.${+m[2]}.${String(y).padStart(2,"0")}`; }
+function dateToISO(s){ const m=String(s==null?"":s).trim().match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
+  if(!m) return ""; let y=+m[3]; if(y<100) y+=2000; return `${y}-${String(+m[1]).padStart(2,"0")}-${String(+m[2]).padStart(2,"0")}`; }
+function isoToDate(iso){ const m=String(iso||"").match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?`${+m[2]}.${+m[3]}.${String((+m[1])%100).padStart(2,"0")}`:iso; }
 const isEditor = () => state.role==="editor" || state.role==="admin";
 const isAdmin  = () => state.role==="admin";
 const making   = () => state.mode==="make" && isEditor();
@@ -232,7 +239,7 @@ function renderBrowse(a){
                 :`<label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="showInactive" ${state.showInactive?"checked":""}> Show inactive</label>`}
       <span class="hint">${items.length} ${items.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
     </div>
-    <div class="split">
+    <div class="split" id="split">
       <div class="list" id="list">${items.map(rowHTML).join("")||`<div class="empty">No communities${state.q?" match your search":making()?" yet — add one":" published yet"}.</div>`}</div>
       <div class="panel" id="detail"><div class="empty">Select a community.</div></div>
     </div>`;
@@ -284,8 +291,8 @@ function openDetail(id){
     : `<span class="pill pub">Published</span>`) + inactivePill;
 
   const heading = (fval(d,"project_name") || (row&&row.name) || "").trim() || "(untitled)";
-  let h=`<div class="ptitle"><div>${esc(heading)}
-      <span class="s">${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}</span></div>
+  let h=`<div class="ptitle"><div class="ptitle-main"><button class="mob-back" id="mobBack">&#8592; List</button>
+      <div>${esc(heading)}<span class="s">${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}</span></div></div>
       <div class="acts">${acts.join("")}</div></div>`;
 
   SCHEMA.SECTIONS.forEach(sec=>{ h+=renderSection(sec, d, editing, id); });
@@ -293,6 +300,8 @@ function openDetail(id){
   h+=`<div class="sec"><span>Images</span>${editing?`<button data-imgadd>Add image</button>`:""}</div>`;
   h+=imagesHTML(id, editing);
   $("detail").innerHTML=h;
+  const sp=$("split"); if(sp) sp.classList.add("show-detail");        // mobile: reveal detail
+  if($("mobBack")) $("mobBack").onclick=()=>{ const s=$("split"); if(s) s.classList.remove("show-detail"); };
   wirePlanNames(id, editing);
   if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
   if($("btnExportPdf")) $("btnExportPdf").onclick=()=>exportCISpdf(id);
@@ -363,12 +372,26 @@ function wirePlanNames(id, editing){
 }
 function beginEdit(sp,id){
   const path=sp.dataset.ev; const cur=getPath(id,path);
+  const p=path.split("."); if(p[0]==="f" && DATE_KEYS[p[1]]) return beginDateEdit(sp,id,path,cur);
   const long=(path==="note");
   const inp=document.createElement(long?"textarea":"input"); inp.className="ed-in"; inp.value=cur||"";
   sp.replaceWith(inp); inp.focus();
   const done=async(save)=>{ if(save){ await setPath(id,path,inp.value); } openDetail(id); };
   inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!long){ e.preventDefault(); done(true);} else if(e.key==="Escape") done(false); });
   inp.addEventListener("blur",()=>done(true));
+}
+// Date fields: free typing (any text, incl. "TBD") + a calendar picker; saved as M.D.YY.
+function beginDateEdit(sp,id,path,cur){
+  const wrap=document.createElement("span"); wrap.className="ev-date";
+  const txt=document.createElement("input"); txt.type="text"; txt.className="ed-in"; txt.value=cur||""; txt.placeholder="M.D.YY or TBD";
+  const cal=document.createElement("input"); cal.type="date"; cal.className="ed-cal"; cal.title="Pick a date";
+  const iso=dateToISO(cur); if(iso) cal.value=iso;
+  wrap.appendChild(txt); wrap.appendChild(cal); sp.replaceWith(wrap); txt.focus(); txt.select();
+  let done=false;
+  const finish=async(save)=>{ if(done) return; done=true; if(save){ await setPath(id,path,txt.value); } openDetail(id); };
+  cal.addEventListener("change",()=>{ if(cal.value) txt.value=isoToDate(cal.value); txt.focus(); });
+  txt.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); finish(true);} else if(e.key==="Escape") finish(false); });
+  wrap.addEventListener("focusout",()=>setTimeout(()=>{ if(!wrap.contains(document.activeElement)) finish(true); },120));
 }
 function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; const d=(row&&row.data)||{};
   const p=path.split("."); const kind=p[0];
@@ -381,7 +404,7 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
 async function setPath(id,path,value){
   const row=await ensureDraft(id); const d=row.data=row.data||{}; d.f=d.f||{};
   const p=path.split("."); const kind=p[0];
-  if(kind==="f"){ d.f[p[1]]=value;
+  if(kind==="f"){ if(DATE_KEYS[p[1]]) value=normDate(value); d.f[p[1]]=value;
     const I=SCHEMA.IDENTITY;
     if(p[1]===I.name) row.name=value; if(p[1]===I.jde) row.jde=value;
     if(p[1]===I.project) row.project_name=value; if(p[1]===I.product) row.hub=value;
@@ -588,8 +611,9 @@ async function delImage(id,imgId){ if(!(await uiConfirm("Delete this image?",{ti
 function isGap(v){ const s=lc(v).trim(); return !s || s==="tbd" || s==="tbd in source"; }
 function gapRows(){
   const rows=[];
-  // reflect whatever's currently displayed (search + inactive/drafts filters)
-  visibleItems().forEach(it=>{ const row=it.draft||it.pub; if(!row) return; const d=row.data||{}; const f=d.f||{};
+  // reflect whatever's currently displayed (search + inactive/drafts filters) and
+  // the row you can actually see (published for viewers, draft in maker mode)
+  visibleItems().forEach(it=>{ const row=shownRow(it); if(!row) return; const d=row.data||{}; const f=d.f||{};
     SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
       sec.fields.forEach(fl=>{ if(fl.readonly) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
@@ -636,7 +660,7 @@ function renderAdd(a){
 }
 
 /* ---- trench-date update from the New Community Checklist (preview → apply) ---- */
-function clDate(d){ return (d instanceof Date && !isNaN(d)) ? `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}` : ""; }
+function clDate(d){ return (d instanceof Date && !isNaN(d)) ? `${d.getMonth()+1}.${d.getDate()}.${String(d.getFullYear()%100).padStart(2,"0")}` : ""; }
 function parseChecklist(wb){
   const ws=wb.Sheets["Summary"]; if(!ws) return {rows:[],unmatched:[]};
   const aoa=XLSX.utils.sheet_to_json(ws,{header:1,cellDates:true,defval:null});
