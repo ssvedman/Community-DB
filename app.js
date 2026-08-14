@@ -153,7 +153,7 @@ function wireChrome(){
   $("adminLink").onclick=showAdmin; $("dashLink").onclick=()=>{ showDash(); render(); };
   $("modeToggle").querySelectorAll(".mode").forEach(b=>b.onclick=()=>{
     state.mode=b.dataset.mode; $("modeToggle").querySelectorAll(".mode").forEach(x=>x.classList.toggle("on",x===b));
-    if(state.mode==="view" && state.view==="add"){ state.view="browse"; setTab(); }
+    if(state.mode==="view" && (state.view==="gaps"||state.view==="add")){ state.view="browse"; setTab(); }
     syncEditorTabs(); render();
   });
   $("tabs").querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ state.view=t.dataset.view; setTab(); showDash(); render(); });
@@ -220,13 +220,13 @@ function render(){
   const a=$("viewArea");
   a.classList.remove("mob-detail");   // reset mobile detail state on any view change
   if(state.view==="browse") return renderBrowse(a);
-  if(state.view==="gaps") return renderGaps(a);
+  if(state.view==="gaps"  && making()) return renderGaps(a);
   if(state.view==="add"   && isEditor()) return renderAdd(a);
   state.view="browse"; setTab(); renderBrowse(a);
 }
 function updateCounts(){
   $("cBrowse").textContent = visibleItems().length;
-  const g=$("cGaps"); if(g) g.textContent = gapRows().length;
+  const g=$("cGaps"); if(g) g.textContent = making()? gapRows().length : "";
 }
 
 /* ---------------- BROWSE ---------------- */
@@ -353,6 +353,15 @@ function renderSection(sec, d, editing, id){
     let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
     return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><div class="tscroll"><table class="plans-t">${head}${body}</table></div>`;
   }
+  if(sec.kind==="grid"){
+    const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
+    const anyVal=arr.some(r=>Array.isArray(r)&&r.some(x=>x!=null&&x!==""));
+    if(!anyVal && !editing) return "";
+    let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}</tr>`;
+    let body=sec.rowLabels.map((lbl,ri)=>{ const row=arr[ri]||[];
+      return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}</tr>`; }).join("");
+    return `<div class="sec"><span>${esc(sec.title)}</span></div><div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>`;
+  }
   if(sec.kind==="note"){
     const t=(d.note==null?"":String(d.note));
     if(!editing && !t) return "";
@@ -408,6 +417,7 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
   if(kind==="f") return (d.f||{})[p[1]];
   if(kind==="note") return d.note||"";
   if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
+  if(kind==="m"){ const r=(d.model||[])[+p[1]]||[]; return r[+p[2]]; }
   if(kind==="x"){ const arr=(d.extra||{})[p[1]]||[]; const pair=arr[+p[2]]||[]; return pair[1]; }
   return "";
 }
@@ -421,6 +431,7 @@ async function setPath(id,path,value){
   }
   else if(kind==="note") d.note=value;
   else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||["","","","",""]; r[+p[2]]=value; }
+  else if(kind==="m"){ d.model=d.model||[]; const r=d.model[+p[1]]=d.model[+p[1]]||["","","",""]; r[+p[2]]=value; }
   else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
@@ -459,6 +470,11 @@ function exportCIS(id){
       fullRow(sec.title, stSection);
       SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stPHdr)); R++;
       arr.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stPCell)); R++; }); R++;
+    } else if(sec.kind==="grid"){
+      const arr=d[sec.key]||[]; if(!arr.some(r=>Array.isArray(r)&&r.some(x=>x))) return;
+      fullRow(sec.title, stSection);
+      put(R,0,sec.rowHeader||"",stPHdr); sec.columns.forEach((c,ci)=>put(R,ci+1,c,stPHdr)); R++;
+      sec.rowLabels.forEach((lbl,ri)=>{ const row=arr[ri]||[]; put(R,0,lbl,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,row[ci]||"",stPCell)); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
       fullRow(sec.title, stSection); fullRow(t, stVal); R++;
@@ -504,6 +520,14 @@ function exportCISpdf(id){
             {content:sec.title,colSpan:SCHEMA.PLAN_COLS.length,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
             SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]}});
       }
+    } else if(sec.kind==="grid"){
+      const arr=d[sec.key]||[];
+      if(arr.some(r=>Array.isArray(r)&&r.some(x=>x))){
+        const body=sec.rowLabels.map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; });
+        sectionTable(sec.title, body, { cols:5, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
+          {content:sec.title,colSpan:5,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+          [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...sec.columns.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
+      }
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(t) sectionTable(sec.title, [[t]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}});
     }
@@ -536,7 +560,7 @@ async function newCommunity(){
   const name=await uiPrompt("Community name",{title:"New community",okText:"Create",placeholder:"e.g. Bronson's Ridge"});
   if(name==null||!name.trim()) return;
   const row={ community_id:uid(), status:"draft", source:"manual", name:name.trim(),
-    data:{ f:{ [SCHEMA.IDENTITY.name]:name.trim() }, plans:[], note:"", extra:{} } };
+    data:{ f:{ [SCHEMA.IDENTITY.name]:name.trim() }, plans:[], model:[], note:"", extra:{} } };
   await saveDraft(row); await loadAll(); render(); openDetail(row.community_id);
 }
 async function startDraft(id){ await ensureDraft(id); await loadAll(); render(); openDetail(id); }
@@ -770,10 +794,12 @@ function splitPlanRow(a,b,c,d,e){
 
 /* ---- xlsx import: one community per sheet ---- */
 function parseSheet(aoa){
-  const HDR={ "project information":"proj","floor plans":"plans","home construction specifications":"hcs",
-    "community specific specifications":"cs","utility providers":"up","notes (special circumstances)":"note","community map":"map" };
+  const HDR={ "project information":"proj","floor plans":"plans","model and sales office information":"model",
+    "home construction specifications":"hcs","community specific specifications":"cs","utility providers":"up",
+    "notes (special circumstances)":"note","community map":"map" };
   const idx=SCHEMA.labelIndex(); const norm=SCHEMA.norm;
-  const data={ f:{}, plans:[], note:"", extra:{} }; let cur=null; const noteLines=[]; let meta="";
+  const gridSec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"); const gridLabels=(gridSec&&gridSec.rowLabels)||[];
+  const data={ f:{}, plans:[], model:[], note:"", extra:{} }; let cur=null; const noteLines=[]; let meta="";
   for(const rrow of aoa){
     const a=(rrow[0]==null?"":String(rrow[0])).trim();
     const b=(rrow[1]==null?"":String(rrow[1])).trim();
@@ -785,6 +811,12 @@ function parseSheet(aoa){
     if(cur==="plans"){
       if(/^final plan offering/i.test(a)) continue;
       if(a||b) data.plans.push(splitPlanRow(a, b, rrow[2], rrow[3], rrow[4]));
+      continue;
+    }
+    if(cur==="model"){
+      if(/^model$/i.test(a)) continue;                   // column-header row
+      const gi=gridLabels.findIndex(l=>l.toLowerCase()===a.toLowerCase());
+      if(gi>=0) data.model[gi]=[b, (rrow[2]==null?"":String(rrow[2]).trim()), (rrow[3]==null?"":String(rrow[3]).trim()), (rrow[4]==null?"":String(rrow[4]).trim())];
       continue;
     }
     if(cur==="note"){ if(a) noteLines.push(a); continue; }

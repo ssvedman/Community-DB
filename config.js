@@ -50,6 +50,9 @@ window.CIS = {
       { k:"owning_entity",  label:"Owning Entity" }
     ]},
     { id:"plans", title:"Floor Plans", kind:"plans" },
+    { id:"model", title:"Model and Sales Office Information", kind:"grid", key:"model", rowHeader:"Model",
+      rowLabels:["Model Home Plan 1","Model Home Plan 2","Model Home Plan 3","Lot for Parking","WHC Homesite","Buffer Homesite"],
+      columns:["Plan / Elevation / Swing","Homesite","Projected Start","Projected Completion"] },
     { id:"hcs", title:"Home Construction Specifications", kind:"kv", fields:[
       { k:"ext_wall",         label:"Exterior Wall Type" },
       { k:"foundation",       label:"Foundation Type" },
@@ -88,6 +91,8 @@ window.CIS = {
       { k:"power_tug",      label:"Power TUG" },
       { k:"water_meter",    label:"Water Meter Provider" },
       { k:"irrigation_meter", label:"Irrigation Meter" },
+      { k:"metered_banks",  label:"Metered Banks" },
+      { k:"individual_banks", label:"Individual Banks" },
       { k:"fision_x",       label:"Fision X" }
     ]},
     { id:"note", title:"Notes (Special Circumstances)", kind:"note" }

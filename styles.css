@@ -108,6 +108,8 @@ input[type=search]{min-width:300px;background:#fffbe6;border-color:var(--amberli
 .plans-t td:nth-child(3),.plans-t th:nth-child(3),
 .plans-t td:nth-child(4),.plans-t th:nth-child(4),
 .plans-t td:nth-child(5),.plans-t th:nth-child(5){width:150px}
+.model-t td:first-child,.model-t th:first-child{width:150px}
+.model-t td:nth-child(2),.model-t th:nth-child(2){width:230px}
 .exp-wrap{position:relative;display:inline-block}
 .exp-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:40;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);overflow:hidden}
 .exp-menu button{display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:none;color:var(--ink);font:inherit;cursor:pointer}
