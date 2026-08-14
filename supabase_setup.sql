@@ -266,7 +266,7 @@ create table if not exists public.cdb_reset_tokens (
 alter table public.cdb_reset_tokens enable row level security;  -- no direct client access
 
 create or replace function public.cdb_admin_add_or_reset(target_email text)
-returns jsonb language plpgsql security definer set search_path = public, auth as $$
+returns jsonb language plpgsql security definer set search_path = public, auth, extensions as $$
 declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; begin
   if not public.cdb_is_admin() then
     return jsonb_build_object('ok', false, 'error', 'Not authorized.');
@@ -296,7 +296,7 @@ declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; beg
 end $$;
 
 create or replace function public.cdb_redeem_reset_token(p_token text, p_new_password text)
-returns jsonb language plpgsql security definer set search_path = public, auth as $$
+returns jsonb language plpgsql security definer set search_path = public, auth, extensions as $$
 declare v_email text; v_created timestamptz; v_used timestamptz; begin
   if length(coalesce(p_new_password,'')) < 8 then
     return jsonb_build_object('ok', false, 'error', 'Password must be at least 8 characters.');

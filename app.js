@@ -13,7 +13,7 @@ if (!DEMO && window.supabase) sb = window.supabase.createClient(CFG.SUPABASE_URL
 });
 
 const state = { email:null, role:"viewer", mode:"view", view:"browse",
-                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false };
+                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[] };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
@@ -886,12 +886,28 @@ async function renderResetLink(){
 async function renderPerms(){
   const p=$("permsPanel");
   let rows=[]; try{ const { data }=await sb.rpc("cdb_admin_list_users"); rows=data||[]; }catch(e){}
-  p.innerHTML=`<div class="panel"><div class="sec"><span>Users &amp; roles</span></div>
-    <table class="perms-t"><tr><th>Email</th><th>Role</th><th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
-      <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
-      <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")||`<tr><td colspan="3" class="empty">No roles yet.</td></tr>`}</table></div>`;
-  p.querySelectorAll("[data-role]").forEach(s=>s.onchange=async()=>{ await sb.from("cdb_app_roles").upsert({email:s.dataset.role,role:s.value},{onConflict:"email"}); });
-  p.querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Remove "+b.dataset.rmuser+"'s role? They become a viewer.",{title:"Remove role",okText:"Remove",danger:true})){ await sb.from("cdb_app_roles").delete().eq("email",b.dataset.rmuser); renderPerms(); } });
+  rows.sort((a,b)=>String(a.email).localeCompare(String(b.email)));
+  state.users=rows;
+  p.innerHTML=`<div class="panel"><div class="sec"><span>Users &amp; roles</span><span class="sec-count" id="userCount"></span></div>
+    <div style="padding:12px 14px 14px">
+      <input type="text" id="userSearch" class="permsearch" placeholder="Search users by email or role…">
+      <div id="userList"></div>
+    </div></div>`;
+  $("userSearch").oninput=drawUsers;
+  drawUsers();
+}
+function drawUsers(){
+  const list=$("userList"); if(!list) return;
+  const q=lc(($("userSearch")&&$("userSearch").value)||"");
+  const rows=q ? state.users.filter(u=>lc(u.email).includes(q)||lc(u.role).includes(q)) : state.users;
+  const cnt=$("userCount"); if(cnt) cnt.textContent=`${rows.length}${q?" of "+state.users.length:""}`;
+  list.innerHTML = rows.length
+    ? `<table class="perms-t"><tr><th>Email</th><th>Role</th><th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
+        <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
+        <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")}</table>`
+    : `<div class="empty">${q?"No users match your search.":"No users."}</div>`;
+  list.querySelectorAll("[data-role]").forEach(s=>s.onchange=async()=>{ await sb.from("cdb_app_roles").upsert({email:s.dataset.role,role:s.value},{onConflict:"email"}); const u=state.users.find(x=>x.email===s.dataset.role); if(u) u.role=s.value; });
+  list.querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Remove "+b.dataset.rmuser+"'s role? They become a viewer.",{title:"Remove role",okText:"Remove",danger:true})){ await sb.from("cdb_app_roles").delete().eq("email",b.dataset.rmuser); await renderPerms(); } });
 }
 
 /* ---------------- BOOTSTRAP ---------------- */
