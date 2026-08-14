@@ -245,7 +245,7 @@ function renderBrowse(a){
     </div>`;
   $("q").addEventListener("input",e=>{ state.q=e.target.value; const l=$("list"); const its=visibleItems();
     l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; });
-  const repaintList=()=>{ const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; };
+  const repaintList=()=>{ const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); updateCounts(); };
   if(making()){ $("newComm").onclick=newCommunity;
     if($("draftsOnly")) $("draftsOnly").onclick=e=>{ state.draftsOnly=e.target.checked; repaintList(); }; }
   else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; repaintList(); };
@@ -301,7 +301,8 @@ function openDetail(id){
   h+=imagesHTML(id, editing);
   $("detail").innerHTML=h;
   const sp=$("split"); if(sp) sp.classList.add("show-detail");        // mobile: reveal detail
-  if($("mobBack")) $("mobBack").onclick=()=>{ const s=$("split"); if(s) s.classList.remove("show-detail"); };
+  const va=$("viewArea"); if(va) va.classList.add("mob-detail");      // mobile: hide the search bar
+  if($("mobBack")) $("mobBack").onclick=()=>{ const s=$("split"); if(s) s.classList.remove("show-detail"); if(va) va.classList.remove("mob-detail"); };
   wirePlanNames(id, editing);
   if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
   if($("btnExportPdf")) $("btnExportPdf").onclick=()=>exportCISpdf(id);
@@ -634,7 +635,7 @@ function renderGaps(a){
     $("gapsTable").innerHTML= rs.length? `<table><tr><th>Community</th><th>Field</th><th>Status</th></tr>`+rs.map(r=>`<tr><td><a href="#" data-goto="${r.id}">${esc(r.name)}</a></td><td>${esc(r.field)}</td><td>${esc(r.status)}</td></tr>`).join("")+`</table>`:`<div class="empty">No gaps.</div>`;
     $("gapsTable").querySelectorAll("[data-goto]").forEach(a2=>a2.onclick=e=>{ e.preventDefault(); state.view="browse"; setTab(); state.sel=a2.dataset.goto; render(); openDetail(a2.dataset.goto); });
   };
-  $("q").addEventListener("input",e=>{ state.q=e.target.value; $("cBrowse").textContent=visibleItems().length; paint(); });
+  $("q").addEventListener("input",e=>{ state.q=e.target.value; updateCounts(); paint(); });
   $("gStatus").addEventListener("change",paint); paint();
 }
 

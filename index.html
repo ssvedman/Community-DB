@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Community-DB — Orlando Division</title>
 <link rel="icon" href="logo.svg">
-<link rel="stylesheet" href="styles.css?v=22">
+<link rel="stylesheet" href="styles.css?v=23">
 </head>
 <body>
 
@@ -41,15 +41,17 @@
       <button class="home-logo" id="homeLogo" title="Home"><img src="logo.svg" alt="Community-DB — home"></button>
       <span class="title">Community-DB <span class="sub">Orlando Division</span></span>
       <div class="spacer"></div>
-      <span class="mode-toggle hidden" id="modeToggle">
-        <button class="mode on" data-mode="view">Viewer</button>
-        <button class="mode" data-mode="make">Maker</button>
-      </span>
-      <span class="user-chip" id="userChip"></span>
-      <button class="linkbtn" id="themeBtn" title="Toggle light/dark">Dark</button>
-      <button class="linkbtn hidden" id="adminLink">Admin</button>
-      <button class="linkbtn hidden" id="dashLink">← Back</button>
-      <button class="linkbtn" id="logoutBtn">Sign out</button>
+      <div class="topbar-actions">
+        <span class="mode-toggle hidden" id="modeToggle">
+          <button class="mode on" data-mode="view">Viewer</button>
+          <button class="mode" data-mode="make">Maker</button>
+        </span>
+        <span class="user-chip" id="userChip"></span>
+        <button class="linkbtn" id="themeBtn" title="Toggle light/dark">Dark</button>
+        <button class="linkbtn hidden" id="adminLink">Admin</button>
+        <button class="linkbtn hidden" id="dashLink">← Back</button>
+        <button class="linkbtn" id="logoutBtn">Sign out</button>
+      </div>
     </div>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-view="browse">Communities <span class="count" id="cBrowse"></span></button>
@@ -86,7 +88,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-<script src="config.js?v=22"></script>
-<script src="app.js?v=22"></script>
+<script src="config.js?v=23"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
