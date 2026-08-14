@@ -218,6 +218,7 @@ function visibleItems(){
 function render(){
   updateCounts();
   const a=$("viewArea");
+  a.classList.remove("mob-detail");   // reset mobile detail state on any view change
   if(state.view==="browse") return renderBrowse(a);
   if(state.view==="gaps") return renderGaps(a);
   if(state.view==="add"   && isEditor()) return renderAdd(a);
@@ -274,8 +275,8 @@ function openDetail(id){
   const editing = making();
   const acts=[];
   if(!editing){   // exports only on the viewer side
-    acts.push(`<button class="btn mini ghost" id="btnExport">&#8681; .xlsx</button>`);
-    acts.push(`<button class="btn mini ghost" id="btnExportPdf">&#8681; PDF</button>`);
+    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnExport">&#8681; Export &#9662;</button>
+      <div class="exp-menu hidden" id="expMenu"><button data-exp="pdf">PDF</button><button data-exp="xlsx">Excel (.xlsx)</button></div></span>`);
   }
   if(editing){
     if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish</button>`);
@@ -304,8 +305,12 @@ function openDetail(id){
   const va=$("viewArea"); if(va) va.classList.add("mob-detail");      // mobile: hide the search bar
   if($("mobBack")) $("mobBack").onclick=()=>{ const s=$("split"); if(s) s.classList.remove("show-detail"); if(va) va.classList.remove("mob-detail"); };
   wirePlanNames(id, editing);
-  if($("btnExport")) $("btnExport").onclick=()=>exportCIS(id);
-  if($("btnExportPdf")) $("btnExportPdf").onclick=()=>exportCISpdf(id);
+  if($("btnExport")){
+    const menu=$("expMenu");
+    $("btnExport").onclick=e=>{ e.stopPropagation(); menu.classList.toggle("hidden"); };
+    menu.querySelectorAll("[data-exp]").forEach(b=>b.onclick=()=>{ menu.classList.add("hidden"); if(b.dataset.exp==="pdf") exportCISpdf(id); else exportCIS(id); });
+    document.addEventListener("click",()=>menu.classList.add("hidden"),{once:true});
+  }
   if(editing){
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
     if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
@@ -346,7 +351,7 @@ function renderSection(sec, d, editing, id){
         return `<td class="v"><span class="plname" data-planopen="${ri}" data-full="${esc(v)}">${v?esc(v):'<span class="none">—</span>'}</span></td>`; }
       return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
     let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
-    return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><table>${head}${body}</table>`;
+    return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><div class="tscroll"><table>${head}${body}</table></div>`;
   }
   if(sec.kind==="note"){
     const t=(d.note==null?"":String(d.note));
