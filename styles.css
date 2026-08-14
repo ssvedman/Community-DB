@@ -161,9 +161,16 @@ textarea.ed-in{min-height:90px;resize:vertical}
 
 /* admin */
 .admin-layout{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.admin-layout>div{min-width:0}
 @media(max-width:880px){.admin-layout{grid-template-columns:1fr}}
 .linkrow{display:flex;gap:8px;margin-top:8px}
-.linkrow input{flex:1}
+.linkrow input{flex:1;min-width:0}
+/* Users & roles: fit within the panel; long emails wrap instead of forcing page width */
+.perms-t{width:100%;table-layout:fixed}
+.perms-t td,.perms-t th{overflow-wrap:anywhere;word-break:break-word}
+.perms-t td:nth-child(2),.perms-t th:nth-child(2){width:100px}
+.perms-t td:nth-child(3),.perms-t th:nth-child(3){width:88px}
+.perms-t select{max-width:100%}
 
 .site-foot{max-width:1220px;margin:0 auto;padding:16px 18px;color:var(--mute);font-size:12.5px;display:flex;gap:8px;align-items:center}
 .site-foot a{color:var(--link);text-decoration:none}

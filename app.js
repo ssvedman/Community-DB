@@ -855,7 +855,7 @@ async function renderPerms(){
   const p=$("permsPanel");
   let rows=[]; try{ const { data }=await sb.rpc("cdb_admin_list_users"); rows=data||[]; }catch(e){}
   p.innerHTML=`<div class="panel"><div class="sec"><span>Users &amp; roles</span></div>
-    <table><tr><th>Email</th><th>Role</th><th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
+    <table class="perms-t"><tr><th>Email</th><th>Role</th><th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
       <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
       <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")||`<tr><td colspan="3" class="empty">No roles yet.</td></tr>`}</table></div>`;
   p.querySelectorAll("[data-role]").forEach(s=>s.onchange=async()=>{ await sb.from("cdb_app_roles").upsert({email:s.dataset.role,role:s.value},{onConflict:"email"}); });
