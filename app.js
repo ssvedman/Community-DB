@@ -877,7 +877,7 @@ async function renderResetLink(){
     out.textContent="Working…";
     const { data,error }=await sb.rpc("cdb_admin_add_or_reset",{target_email:email});
     if(error||(data&&!data.ok)){ out.innerHTML=`<span class="msg err" style="display:inline-block;padding:8px">${esc((error&&error.message)||(data&&data.error)||"Failed")}</span>`; return; }
-    const url=location.origin+location.pathname+"#recover="+encodeURIComponent(data.token);
+    const url=((CFG.BLUEPRINT_URL||(location.origin+location.pathname)).replace(/#.*$/,""))+"#recover="+encodeURIComponent(data.token)+"&pool=cdb";
     out.innerHTML=`<div class="msg ok" style="padding:8px">Link for <b>${esc(email)}</b> — share it privately:</div><div class="linkrow"><input type="text" id="ruLink" readonly value="${esc(url)}"><button class="btn mini ghost" id="ruCopy">Copy</button></div>`;
     $("ruCopy").onclick=()=>{ $("ruLink").select(); document.execCommand("copy"); $("ruCopy").textContent="Copied"; };
     renderPerms();
