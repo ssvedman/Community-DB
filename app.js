@@ -175,7 +175,7 @@ function showAdmin(){ if(!isAdmin())return; $("dashboard").classList.add("hidden
 
 /* ---------------- DATA ---------------- */
 async function loadAll(){
-  state.items=[]; state.notes=[]; state.imgs={};
+  state.items=[]; state.notes=[]; state.imgs={}; state.imgUrls={};   // signed URLs last 1h — re-sign every load
   if(DEMO||!sb) return;
   try{
     const { data:cis } = await sb.from("cdb_cis").select("*");
@@ -433,7 +433,7 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
   return "";
 }
 async function setPath(id,path,value){
-  const row=await ensureDraft(id); const d=row.data=row.data||{}; d.f=d.f||{};
+  const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; d.f=d.f||{};
   const p=path.split("."); const kind=p[0];
   if(kind==="f"){ if(DATE_KEYS[p[1]]) value=normDate(value); d.f[p[1]]=value;
     const I=SCHEMA.IDENTITY;
@@ -446,8 +446,8 @@ async function setPath(id,path,value){
   else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
-async function plAdd(id){ const row=await ensureDraft(id); const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
-async function plDel(id,ri){ const row=await ensureDraft(id); const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
+async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
+async function plDel(id,ri){ const row=await ensureDraft(id); if(!row) return; const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
 
 /* ---------- export a CIS to a themed .xlsx (matches the PDF styling) ---------- */
 function exportCIS(id){
@@ -547,13 +547,17 @@ function exportCISpdf(id){
 }
 
 /* ---------- draft / publish ---------- */
-async function ensureDraft(id){
-  const it=itemById(id); if(it&&it.draft) return it.draft;
-  if(it&&it.hasPub){ // clone published → draft via RPC, then reload
-    await sb.rpc("cdb_start_draft",{p_community_id:id}); await loadAll();
-    return itemById(id).draft;
+async function ensureDraft(id){   // null = couldn't get one; callers must bail
+  const it=itemById(id); if(!it) return null;
+  if(it.draft) return it.draft;
+  if(it.hasPub){ // clone published → draft via RPC, then reload
+    const { data, error }=await sb.rpc("cdb_start_draft",{p_community_id:id});
+    if(error || (data && !data.ok)){
+      uiAlert((error&&error.message)||(data&&data.error)||"Couldn't start a draft.","Couldn't start a draft"); return null; }
+    await loadAll();
+    const fresh=itemById(id); return (fresh&&fresh.draft)||null;
   }
-  return it.draft;
+  return it.draft||null;
 }
 async function saveDraft(row){
   row.status="draft"; row.updated_at=new Date().toISOString(); row.updated_by=state.email;
@@ -574,7 +578,7 @@ async function newCommunity(){
     data:{ f:{ [SCHEMA.IDENTITY.name]:name.trim() }, plans:[], model:[], note:"", extra:{} } };
   await saveDraft(row); await loadAll(); render(); openDetail(row.community_id);
 }
-async function startDraft(id){ await ensureDraft(id); await loadAll(); render(); openDetail(id); }
+async function startDraft(id){ if(!await ensureDraft(id)) return; await loadAll(); render(); openDetail(id); }
 async function discardDraft(id){
   if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
   await sb.from("cdb_cis").delete().eq("community_id",id).eq("status","draft"); await loadAll(); render();
@@ -744,11 +748,13 @@ async function importChecklist(file, logln){
   logln(`Checklist parsed: ${pv.rows.length} matched, ${pv.unmatched.length} unmatched. Assign any unmatched, then Apply.`,"ok");
 }
 function clApplyList(){
-  const out=[];
-  if(!_clPv) return out;
-  _clPv.rows.forEach(r=>r.matches.forEach(m=>out.push({id:m.id, dateStr:r.dateStr})));
-  _clPv.unmatched.forEach(u=>(u.assign||[]).forEach(id=>out.push({id, dateStr:u.dateStr})));
-  return out;
+  if(!_clPv) return [];
+  // keyed by id so one CIS matched by several checklist rows yields one payload
+  // (duplicate community_ids in an upsert batch fail the whole batch); last wins
+  const out=new Map();
+  _clPv.rows.forEach(r=>r.matches.forEach(m=>out.set(m.id,{id:m.id, dateStr:r.dateStr})));
+  _clPv.unmatched.forEach(u=>(u.assign||[]).forEach(id=>out.set(id,{id, dateStr:u.dateStr})));
+  return [...out.values()];
 }
 function renderChecklistPreview(){
   const el=$("clPreview"); if(!el||!_clPv) return; const pv=_clPv; const apply=clApplyList();
@@ -777,10 +783,12 @@ async function applyChecklist(){
     const data=JSON.parse(JSON.stringify(base.data||{})); data.f=data.f||{}; data.f.trench_date=a.dateStr;
     return { community_id:it.id, division:"orlando", status:"draft", source:base.source||"CIS",
       name:base.name||null, jde:base.jde||null, project_name:base.project_name||null, hub:base.hub||null,
+      active:(it.active!==false),   // an inserted draft would otherwise default true and un-hide the community on publish
       needs_review:true, data, updated_at:new Date().toISOString(), updated_by:state.email }; });
   let ok=0;
   for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
-    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"}); if(!error) ok+=batch.length; }
+    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"});
+    if(error){ if(_clLog) _clLog("Batch failed: "+error.message,"err"); } else ok+=batch.length; }
   if($("clPreview")) $("clPreview").innerHTML=`<div class="note ok" style="margin-top:12px">Updated ${ok} CIS as drafts. Use "Publish all drafts" to make them live.</div>`;
   if(_clLog) _clLog(`Applied trench dates to ${ok} CIS (drafts).`,"ok");
   _clPv=null; await loadAll(); updateCounts();
@@ -847,18 +855,27 @@ async function importXlsx(file, logln){
   const skip=new Set(["home","to do"]);
   const byJde=new Map(), byName=new Map();
   state.items.forEach(it=>{ if(it.jde) byJde.set(String(it.jde).trim(),it.id); if(it.name) byName.set(lc(it.name),it.id); });
-  const payloads=[]; let n=0;
+  // keyed by community_id: two sheets resolving to the same CIS would put duplicate
+  // community_ids in one upsert batch, which fails the whole batch. Last sheet wins.
+  const byCid=new Map();
   wb.SheetNames.forEach(sn=>{ if(skip.has(sn.trim().toLowerCase())) return;
     const aoa=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,blankrows:false,defval:null});
     if(!aoa.length) return;
     const p=parseSheet(aoa);
     const nm=p.name||String(aoa[0]&&aoa[0][0]||sn).trim();
     const cid=(p.jde&&byJde.get(String(p.jde).trim()))||(nm&&byName.get(lc(nm)))||uid();
-    payloads.push({ community_id:cid, division:"orlando", status:"draft", source:"CIS",
+    const prev=byCid.get(cid);
+    if(prev) logln(`Duplicate community "${nm||sn}" — sheet "${prev.sheet}" dropped, "${sn}" wins.`,"warn");
+    // carry an existing community's active flag: an inserted draft would otherwise
+    // default to active and un-hide an inactive community the next time it publishes
+    const ex=itemById(cid);
+    byCid.set(cid,{ sheet:sn, payload:{
+      community_id:cid, division:"orlando", status:"draft", source:"CIS",
       name:nm||sn, jde:p.jde||null, project_name:p.project||null, hub:p.product||null,
-      needs_review:true, data:p.data, updated_at:new Date().toISOString(), updated_by:state.email });
-    n++;
+      active:(ex? ex.active!==false : true),
+      needs_review:true, data:p.data, updated_at:new Date().toISOString(), updated_by:state.email } });
   });
+  const payloads=[...byCid.values()].map(x=>x.payload), n=payloads.length;
   if(!payloads.length){ logln("No community sheets found.","warn"); return; }
   let ok=0;
   for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);

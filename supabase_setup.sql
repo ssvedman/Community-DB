@@ -208,9 +208,9 @@ declare p public.cdb_cis; begin
   if not found then return jsonb_build_object('ok', false, 'error', 'Nothing published to edit.'); end if;
   insert into public.cdb_cis
         (community_id, division, status, name, jde, project_name, hub, source,
-         model_start, needs_review, data, updated_at, updated_by)
+         model_start, needs_review, active, data, updated_at, updated_by)
   values (p.community_id, p.division, 'draft', p.name, p.jde, p.project_name, p.hub, p.source,
-         p.model_start, p.needs_review, p.data, now(), public.cdb_email());
+         p.model_start, p.needs_review, p.active, p.data, now(), public.cdb_email());
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -294,6 +294,9 @@ declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; beg
   insert into public.cdb_app_roles (email, role)
   values (v_email, 'viewer') on conflict (email) do nothing;
 
+  -- issuing a link invalidates any outstanding one for this address
+  update public.cdb_reset_tokens set used_at = now() where email = v_email and used_at is null;
+
   -- store only the hash; the plaintext is returned once, to the admin, and never persisted
   v_token := encode(gen_random_bytes(24), 'hex');
   insert into public.cdb_reset_tokens (token, email)
@@ -315,12 +318,32 @@ declare v_email text; v_created timestamptz; v_used timestamptz;
   if now() - v_created > interval '14 days' then
     return jsonb_build_object('ok', false, 'error', 'This link has expired.');
   end if;
+
+  -- burn the token first and atomically: two concurrent redemptions race on this
+  -- update and only the one that flips used_at from NULL goes on to set the password
+  update public.cdb_reset_tokens set used_at = now() where token = v_hash and used_at is null;
+  if not found then return jsonb_build_object('ok', false, 'error', 'This link was already used.'); end if;
+
   update auth.users
      set encrypted_password = crypt(p_new_password, gen_salt('bf')),
          email_confirmed_at = coalesce(email_confirmed_at, now()),
          updated_at = now()
    where lower(email) = v_email;
-  update public.cdb_reset_tokens set used_at = now() where token = v_hash;
+  if not found then return jsonb_build_object('ok', false, 'error', 'Account not found.'); end if;
+
+  -- a password change logs the other devices out. GoTrue's session tables differ
+  -- between versions (refresh_tokens.user_id is uuid in some, varchar in others —
+  -- hence the ::text on both sides), so a schema mismatch has to degrade to
+  -- "sessions not revoked" rather than fail the redemption.
+  begin
+    delete from auth.sessions
+     where user_id::text = (select id::text from auth.users where lower(email) = v_email);
+    delete from auth.refresh_tokens
+     where user_id::text = (select id::text from auth.users where lower(email) = v_email);
+  exception when undefined_table or undefined_column or undefined_function
+                 or insufficient_privilege then null;
+  end;
+
   return jsonb_build_object('ok', true);
 end $$;
 
