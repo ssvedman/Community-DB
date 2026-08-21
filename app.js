@@ -25,7 +25,7 @@ if (!DEMO && window.supabase) {
 const state = { email:null, role:"viewer", mode:"view", view:"browse",
                 items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[] };
 const $  = id => document.getElementById(id);
-const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : "id"+Date.now()+Math.random().toString(16).slice(2));
 // date helpers — canonical display format is M.D.YY
@@ -401,9 +401,10 @@ function beginEdit(sp,id){
   const long=(path==="note");
   const inp=document.createElement(long?"textarea":"input"); inp.className="ed-in"; inp.value=cur||"";
   sp.replaceWith(inp); inp.focus();
-  const done=async(save)=>{ if(save){ await setPath(id,path,inp.value); } openDetail(id); };
-  inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!long){ e.preventDefault(); done(true);} else if(e.key==="Escape") done(false); });
-  inp.addEventListener("blur",()=>done(true));
+  let done=false;
+  const finish=async(save)=>{ if(done) return; done=true; if(save){ await setPath(id,path,inp.value); } openDetail(id); };
+  inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!long){ e.preventDefault(); finish(true);} else if(e.key==="Escape") finish(false); });
+  inp.addEventListener("blur",()=>finish(true));
 }
 // Date fields: one text box (free typing, incl. "TBD") with a calendar button in
 // the corner that opens a native picker. Always saved as M.D.YY.
@@ -630,14 +631,16 @@ async function downscale(file){
   return { blob, w, h };
 }
 async function uploadImages(id, files){
+  let n=(state.imgs[id]||[]).length;   // base sort_order once; bump per uploaded file
   for(const f of files){
     try{
       const { blob,w,h } = await downscale(f);
       const path=`${id}/${uid()}.jpg`;
       const { error } = await sb.storage.from(CFG.IMAGE_BUCKET).upload(path, blob, { contentType:"image/jpeg", upsert:false });
       if(error) throw error;
-      const rec={ id:uid(), community_id:id, path, caption:f.name.replace(/\.[^.]+$/,""), sort_order:(state.imgs[id]||[]).length, published:false, w, h, created_by:state.email };
+      const rec={ id:uid(), community_id:id, path, caption:f.name.replace(/\.[^.]+$/,""), sort_order:n, published:false, w, h, created_by:state.email };
       const { error:e2 } = await sb.from("cdb_images").insert(rec); if(e2) throw e2;
+      n++;
     }catch(e){ uiAlert("Image upload failed: "+(e.message||e),"Upload failed"); }
   }
   await loadAll(); openDetail(id);
@@ -889,7 +892,9 @@ async function renderResetLink(){
     if(error||(data&&!data.ok)){ out.innerHTML=`<span class="msg err" style="display:inline-block;padding:8px">${esc((error&&error.message)||(data&&data.error)||"Failed")}</span>`; return; }
     const url=((CFG.BLUEPRINT_URL||(location.origin+location.pathname)).replace(/#.*$/,""))+"#recover="+encodeURIComponent(data.token)+"&pool=cdb";
     out.innerHTML=`<div class="msg ok" style="padding:8px">Link for <b>${esc(email)}</b> — share it privately:</div><div class="linkrow"><input type="text" id="ruLink" readonly value="${esc(url)}"><button class="btn mini ghost" id="ruCopy">Copy</button></div>`;
-    $("ruCopy").onclick=()=>{ $("ruLink").select(); document.execCommand("copy"); $("ruCopy").textContent="Copied"; };
+    $("ruCopy").onclick=()=>{ const ok=()=>{ $("ruCopy").textContent="Copied"; };
+      const fallback=()=>{ $("ruLink").select(); try{ document.execCommand("copy"); ok(); }catch(e){} };
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(ok).catch(fallback); else fallback(); };
     renderPerms();
   };
 }

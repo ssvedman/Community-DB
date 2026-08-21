@@ -258,7 +258,7 @@ end $$;
    by the other portals. No email is sent — the admin shares the one-time link.
    ------------------------------------------------------------------------- */
 create table if not exists public.cdb_reset_tokens (
-  token      text primary key,
+  token      text primary key,       -- SHA-256 hex of the token; the plaintext never lands here
   email      text not null,
   created_at timestamptz not null default now(),
   used_at    timestamptz
@@ -294,19 +294,22 @@ declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; beg
   insert into public.cdb_app_roles (email, role)
   values (v_email, 'viewer') on conflict (email) do nothing;
 
+  -- store only the hash; the plaintext is returned once, to the admin, and never persisted
   v_token := encode(gen_random_bytes(24), 'hex');
-  insert into public.cdb_reset_tokens (token, email) values (v_token, v_email);
+  insert into public.cdb_reset_tokens (token, email)
+  values (encode(digest(v_token, 'sha256'), 'hex'), v_email);
   return jsonb_build_object('ok', true, 'token', v_token, 'email', v_email);
 end $$;
 
 create or replace function public.cdb_redeem_reset_token(p_token text, p_new_password text)
 returns jsonb language plpgsql security definer set search_path = public, auth, extensions as $$
-declare v_email text; v_created timestamptz; v_used timestamptz; begin
+declare v_email text; v_created timestamptz; v_used timestamptz;
+        v_hash text := encode(digest(coalesce(p_token,''), 'sha256'), 'hex'); begin
   if length(coalesce(p_new_password,'')) < 8 then
     return jsonb_build_object('ok', false, 'error', 'Password must be at least 8 characters.');
   end if;
   select email, created_at, used_at into v_email, v_created, v_used
-    from public.cdb_reset_tokens where token = p_token;
+    from public.cdb_reset_tokens where token = v_hash;
   if v_email is null then return jsonb_build_object('ok', false, 'error', 'Invalid link.'); end if;
   if v_used is not null then return jsonb_build_object('ok', false, 'error', 'This link was already used.'); end if;
   if now() - v_created > interval '14 days' then
@@ -317,7 +320,7 @@ declare v_email text; v_created timestamptz; v_used timestamptz; begin
          email_confirmed_at = coalesce(email_confirmed_at, now()),
          updated_at = now()
    where lower(email) = v_email;
-  update public.cdb_reset_tokens set used_at = now() where token = p_token;
+  update public.cdb_reset_tokens set used_at = now() where token = v_hash;
   return jsonb_build_object('ok', true);
 end $$;
 
