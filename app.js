@@ -22,7 +22,7 @@ if (!DEMO && window.supabase) {
   });
 }
 
-const state = { email:null, role:"viewer", mode:"view", view:"browse",
+const state = { changeLog:[], email:null, role:"viewer", mode:"view", view:"browse",
                 items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[] };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -153,12 +153,13 @@ async function enterApp(email){
   if(isEditor()){ $("modeToggle").classList.remove("hidden"); }
   if(isAdmin()) $("adminLink").classList.remove("hidden");
   wireChrome(); syncEditorTabs();
-  await loadAll(); render();
+  await loadAll(); render(); refreshWhatsNewBadge();
 }
 // Gaps + Add/import live on the maker side only — hidden in Viewer mode.
 function syncEditorTabs(){ document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making())); }
 function wireChrome(){
   $("logoutBtn").onclick=logout; $("themeBtn").onclick=toggleTheme;
+  if($("whatsNewBtn")) $("whatsNewBtn").onclick=openWhatsNew;
   $("homeLogo").onclick=()=>{ showDash(); state.view="browse"; setTab(); render(); };
   $("adminLink").onclick=showAdmin; $("dashLink").onclick=()=>{ showDash(); render(); };
   $("modeToggle").querySelectorAll(".mode").forEach(b=>b.onclick=()=>{
@@ -197,6 +198,12 @@ async function loadAll(){
     (imgs||[]).forEach(im=>{ (state.imgs[im.community_id]=state.imgs[im.community_id]||[]).push(im); });
     await signImages(imgs||[]);
   }catch(e){ console.error(e); }
+  // recent publish history (drives the What's New feed + unread row dots)
+  try{
+    const since=new Date(Date.now()-90*864e5).toISOString();
+    const { data:log } = await sb.from("cdb_change_log").select("*").gte("at",since).order("at",{ascending:false}).limit(300);
+    state.changeLog=log||[];
+  }catch(e){ state.changeLog=[]; }
 }
 async function signImages(imgs){
   const need=imgs.filter(im=>!state.imgUrls[im.path]).map(im=>im.path);
@@ -270,6 +277,7 @@ function rowHTML(it){
   if(making()){ if(it.hasDraft) pills.push(`<span class="pill draft">Draft</span>`);
     if(it.hasPub) pills.push(`<span class="pill pub">Published</span>`); }
   return `<div class="row ${state.sel===it.id?"sel":""}" data-id="${it.id}">
+    ${commUnseen(it.id)?`<span class="row-dot" title="Updated recently — open to mark as read"></span>`:""}
     <div class="nm">${esc(it.name||"(untitled)")}</div>
     <div class="mt">${it.jde?`JDE ${esc(it.jde)}`:""} ${pills.join(" ")}</div></div>`;
 }
@@ -280,7 +288,9 @@ function shownRow(it){ return making() ? (it.draft||it.pub) : (it.pub||it.draft)
 
 function openDetail(id){
   state.sel=id; const it=itemById(id); if(!it) return;
-  $("list")&&$("list").querySelectorAll(".row").forEach(r=>r.classList.toggle("sel",r.dataset.id===id));
+  markCommSeen(id);   // opening a community clears its unread dot
+  $("list")&&$("list").querySelectorAll(".row").forEach(r=>{ r.classList.toggle("sel",r.dataset.id===id);
+    if(r.dataset.id===id){ const dot=r.querySelector(".row-dot"); if(dot) dot.remove(); } });
   const row=shownRow(it); const d=row?row.data||{}:{};
   const editing = making();
   const acts=[];
@@ -546,6 +556,130 @@ function exportCISpdf(id){
   doc.save(`CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
+/* ---------- What's New (publish change log) ----------
+   At publish time the app diffs the draft against the live published version and
+   writes one cdb_change_log row: a new CIS published, plans added/removed, or
+   CIS details changed (any section field, plan row, table, note or extra field).
+   The feed drives the topbar "What's New" button + the unread dot on list rows. */
+const WN_DOT_DAYS=14;   // a row only shows the unread dot for changes this recent
+function _planRowKey(r){ const num=lc(Array.isArray(r)?r[0]:"").trim(); return num || lc(Array.isArray(r)?r[1]:"").trim(); }
+function _planRowLabel(r){ const S=x=>String(x==null?"":x).trim(); const num=S(r&&r[0]), nm=S(r&&r[1]);
+  return num&&nm?`${num} — ${nm}`:(num||nm||"(unnamed plan)"); }
+function _planRowText(r){ return (Array.isArray(r)?r:[]).map(x=>String(x==null?"":x).trim()).filter(Boolean).join(" · "); }
+function diffCIS(pub, draft){
+  const out={ isNew:!pub, plansAdded:[], plansRemoved:[], fields:[] };
+  if(!draft) return out;
+  const dNew=draft.data||{}, dOld=(pub&&pub.data)||{};
+  if(out.isNew) return out;                      // first publish — no field diff needed
+  const secTitle=id=>{ const s=SCHEMA.SECTIONS.find(x=>x.id===id); return s?s.title:id; };
+  SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.kind==="kv"){
+      (sec.fields||[]).forEach(f=>{ if(f.k==="rev_date") return;   // stamped on every publish — noise
+        const a=fval(dOld,f.k), b=fval(dNew,f.k);
+        if(a!==b) out.fields.push({sec:sec.title,label:f.label,from:a,to:b}); });
+    } else if(sec.kind==="plans"){
+      const oldRows=Array.isArray(dOld.plans)?dOld.plans:[], newRows=Array.isArray(dNew.plans)?dNew.plans:[];
+      const oldBy=new Map(); oldRows.forEach(r=>{ const k=_planRowKey(r); if(k&&!oldBy.has(k)) oldBy.set(k,r); });
+      const newBy=new Map(); newRows.forEach(r=>{ const k=_planRowKey(r); if(k&&!newBy.has(k)) newBy.set(k,r); });
+      newBy.forEach((r,k)=>{
+        if(!oldBy.has(k)) out.plansAdded.push(_planRowLabel(r));
+        else if(JSON.stringify(r)!==JSON.stringify(oldBy.get(k)))
+          out.fields.push({sec:sec.title,label:_planRowLabel(r),from:_planRowText(oldBy.get(k)),to:_planRowText(r)});
+      });
+      oldBy.forEach((r,k)=>{ if(!newBy.has(k)) out.plansRemoved.push(_planRowLabel(r)); });
+    } else if(sec.kind==="grid"){
+      if(JSON.stringify(dOld[sec.key]||[])!==JSON.stringify(dNew[sec.key]||[]))
+        out.fields.push({sec:sec.title,label:"Table updated",from:"",to:""});
+    } else if(sec.kind==="note"){
+      if(String(dOld.note||"")!==String(dNew.note||""))
+        out.fields.push({sec:sec.title,label:"Notes updated",from:"",to:""});
+    }
+  });
+  const exOld=dOld.extra||{}, exNew=dNew.extra||{};
+  new Set([...Object.keys(exOld),...Object.keys(exNew)]).forEach(id=>{
+    if(JSON.stringify(exOld[id]||[])!==JSON.stringify(exNew[id]||[]))
+      out.fields.push({sec:secTitle(id),label:"Additional fields updated",from:"",to:""});
+  });
+  return out;
+}
+function wnSummary(name, diff){
+  const nm=name||"(untitled)";
+  if(diff.isNew) return `New CIS published — ${nm}`;
+  const parts=[];
+  if(diff.plansAdded.length)   parts.push(`${diff.plansAdded.length} plan${diff.plansAdded.length===1?"":"s"} added`);
+  if(diff.plansRemoved.length) parts.push(`${diff.plansRemoved.length} plan${diff.plansRemoved.length===1?"":"s"} removed`);
+  if(diff.fields.length){ const secs=[...new Set(diff.fields.map(f=>f.sec))];
+    parts.push(`details updated (${secs.slice(0,3).join(", ")}${secs.length>3?", …":""})`); }
+  return parts.length?`${nm} — ${parts.join(" · ")}`:`${nm} — republished`;
+}
+function wnHasChanges(diff){ return !!(diff && (diff.isNew || diff.plansAdded.length || diff.plansRemoved.length || diff.fields.length)); }
+async function logCISChange(communityId, name, diff){
+  if(DEMO||!sb||!wnHasChanges(diff)) return;
+  const row={ id:uid(), community_id:communityId, community_name:name||"", at:new Date().toISOString(),
+    by:state.email, kind:diff.isNew?"new":"update", summary:wnSummary(name,diff),
+    detail:{ plansAdded:diff.plansAdded, plansRemoved:diff.plansRemoved, fields:diff.fields.slice(0,120) } };
+  try{ const { error }=await sb.from("cdb_change_log").insert(row);
+    if(error) console.warn("change log insert failed",error); else state.changeLog.unshift(row);
+  }catch(e){ console.warn("change log insert failed",e); }
+  refreshWhatsNewBadge();
+}
+/* seen-tracking: one global timestamp for the button badge, per-community for row dots */
+function wnSeenMap(){ try{ return JSON.parse(localStorage.getItem("cdb_seen_comm")||"{}"); }catch(e){ return {}; } }
+function markCommSeen(id){ try{ const m=wnSeenMap(); m[id]=new Date().toISOString(); localStorage.setItem("cdb_seen_comm",JSON.stringify(m)); }catch(e){} }
+function commUnseen(id){
+  const cut=new Date(Date.now()-WN_DOT_DAYS*864e5).toISOString();
+  const seen=wnSeenMap()[id]||"";
+  return (state.changeLog||[]).some(r=>r.community_id===id && r.at>cut && r.at>seen);
+}
+function refreshWhatsNewBadge(){
+  const btn=$("whatsNewBtn"); if(!btn) return;
+  let seen=null; try{ seen=localStorage.getItem("cdb_wn_seen"); }catch(e){}
+  const latest=(state.changeLog[0]&&state.changeLog[0].at)||null;
+  const unseen=!!(latest && (!seen || latest>seen));
+  btn.classList.toggle("has-updates",unseen);
+  btn.innerHTML="What's New"+(unseen?'<span class="notif-dot"></span>':"");
+}
+function openWhatsNew(){
+  const rows=(state.changeLog||[]).slice(0,60);
+  const items = rows.length ? rows.map((r,i)=>{
+    const when=r.at?new Date(r.at).toLocaleString([], {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}):"";
+    const d=(r.detail && (typeof r.detail==="string"?(function(){try{return JSON.parse(r.detail);}catch(e){return null;}})():r.detail))||null;
+    let det="";
+    if(d){
+      if(d.plansAdded&&d.plansAdded.length)   det+=`<div class="wn-sec"><div class="wn-sec-h">Plans added (${d.plansAdded.length})</div><ul class="wn-ul">${d.plansAdded.map(p=>`<li class="wn-add">${esc(p)}</li>`).join("")}</ul></div>`;
+      if(d.plansRemoved&&d.plansRemoved.length) det+=`<div class="wn-sec"><div class="wn-sec-h">Plans removed (${d.plansRemoved.length})</div><ul class="wn-ul">${d.plansRemoved.map(p=>`<li class="wn-del">${esc(p)}</li>`).join("")}</ul></div>`;
+      if(d.fields&&d.fields.length) det+=`<div class="wn-sec"><div class="wn-sec-h">Details changed (${d.fields.length})</div><ul class="wn-ul">${d.fields.slice(0,60).map(f=>`<li><b>${esc(f.label)}</b> <span class="tiny">(${esc(f.sec)})</span>${(f.from||f.to)?` <span class="wn-arrow">${esc(f.from)||"—"} → ${esc(f.to)||"—"}</span>`:""}</li>`).join("")}${d.fields.length>60?`<li class="tiny">…and ${d.fields.length-60} more</li>`:""}</ul></div>`;
+    }
+    const hasDet=!!det;
+    const openable = r.community_id && itemById(r.community_id);
+    return `<div class="wn-item">
+      <button class="wn-toggle${hasDet?"":" nodetail"}" data-i="${i}">
+        <span class="wn-when">${esc(when)}</span>
+        ${r.kind==="new"?'<span class="pill pub" style="margin-right:6px">New</span>':""}
+        <span class="wn-sum">${esc(r.summary||"")}</span>
+        ${hasDet?'<span class="wn-chev">▸</span>':""}
+      </button>
+      ${hasDet?`<div class="wn-det hidden" data-d="${i}">${det}</div>`:""}
+      <div class="wn-by">${esc(r.by||"")}${openable?` · <a href="#" class="wn-open" data-open="${esc(r.community_id)}">open community</a>`:""}</div>
+    </div>`;
+  }).join("") : `<div class="empty" style="padding:22px">Nothing yet — new CIS publishes, added plans and detail changes will show up here.</div>`;
+  const scrim=document.createElement("div"); scrim.className="modal-scrim";
+  const card=document.createElement("div"); card.className="modal-card wn-card";
+  card.innerHTML=`<div class="modal-h">What's New — recent CIS updates<button class="wn-x" aria-label="Close">&times;</button></div>
+    <div class="modal-b wn-body"><div class="wn-list">${items}</div></div>`;
+  scrim.appendChild(card); document.body.appendChild(scrim);
+  const close=()=>{ document.removeEventListener("keydown",onKey); scrim.remove(); };
+  const onKey=e=>{ if(e.key==="Escape") close(); };
+  document.addEventListener("keydown",onKey);
+  scrim.addEventListener("mousedown",e=>{ if(e.target===scrim) close(); });
+  card.querySelector(".wn-x").onclick=close;
+  card.querySelectorAll(".wn-toggle:not(.nodetail)").forEach(b=>b.onclick=()=>{ const d=card.querySelector(`[data-d="${b.dataset.i}"]`); if(d){ d.classList.toggle("hidden"); b.classList.toggle("open"); } });
+  card.querySelectorAll(".wn-open").forEach(a=>a.onclick=e=>{ e.preventDefault(); const id=a.dataset.open; close();
+    showDash(); state.view="browse"; setTab(); render(); if(itemById(id)) openDetail(id); });
+  const latest=rows[0]&&rows[0].at; if(latest){ try{ localStorage.setItem("cdb_wn_seen",latest); }catch(e){} }
+  refreshWhatsNewBadge();
+}
+
 /* ---------- draft / publish ---------- */
 async function ensureDraft(id){   // null = couldn't get one; callers must bail
   const it=itemById(id); if(!it) return null;
@@ -608,8 +742,13 @@ async function deleteCommunity(id){
 }
 async function publish(id){
   if(!(await uiConfirm("Publish this draft? It becomes the live version for all viewers.",{title:"Publish community",okText:"Publish"}))) return;
+  // diff draft vs live BEFORE publishing (publish clears the draft) → What's New entry
+  const it=itemById(id);
+  const diff=it?diffCIS(it.pub, it.draft):null;
+  const nm=it?(((it.draft&&it.draft.name)||it.name)||""):"";
   const { data,error } = await sb.rpc("cdb_publish",{p_community_id:id});
   if(error||(data&&!data.ok)){ uiAlert("Publish failed: "+((error&&error.message)||(data&&data.error)),"Publish failed"); return; }
+  await logCISChange(id, nm, diff);
   await loadAll(); render(); openDetail(id);
 }
 
@@ -889,7 +1028,13 @@ async function publishAllDrafts(logln){
   if(!ids.length){ if(logln)logln("No drafts to publish.","warn"); return; }
   if(!(await uiConfirm(`Publish all ${ids.length} drafts? Each becomes the live version for viewers.`,{title:"Publish all drafts",okText:"Publish all"}))) return;
   let ok=0;
-  for(const id of ids){ const { data,error }=await sb.rpc("cdb_publish",{p_community_id:id}); if(!error&&data&&data.ok) ok++; }
+  for(const id of ids){
+    const it=itemById(id);
+    const diff=it?diffCIS(it.pub, it.draft):null;
+    const nm=it?(((it.draft&&it.draft.name)||it.name)||""):"";
+    const { data,error }=await sb.rpc("cdb_publish",{p_community_id:id});
+    if(!error&&data&&data.ok){ ok++; await logCISChange(id, nm, diff); }
+  }
   if(logln) logln(`Published ${ok} of ${ids.length} drafts.`, ok===ids.length?"ok":"warn");
   await loadAll(); render();
 }

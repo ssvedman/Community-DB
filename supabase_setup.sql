@@ -373,6 +373,32 @@ drop policy if exists cdb_img_obj_del on storage.objects;
 create policy cdb_img_obj_del on storage.objects for delete
   using (bucket_id = 'cdb-images' and public.cdb_is_editor());
 
+/* ------------------------------------------------- what's new change log --- */
+-- One row per publish that changed something visible (new CIS, plans added,
+-- details changed). Written by the app at publish time; drives the topbar
+-- "What's New" feed and the unread dot on list rows. (Also in add_whats_new.sql.)
+create table if not exists public.cdb_change_log (
+  id             uuid primary key default gen_random_uuid(),
+  community_id   uuid,
+  community_name text,
+  at             timestamptz not null default now(),
+  "by"           text,
+  kind           text not null default 'update' check (kind in ('new','update')),
+  summary        text,
+  detail         jsonb
+);
+create index if not exists cdb_change_log_at_idx   on public.cdb_change_log(at desc);
+create index if not exists cdb_change_log_comm_idx on public.cdb_change_log(community_id, at desc);
+
+alter table public.cdb_change_log enable row level security;
+
+drop policy if exists cdb_cl_sel on public.cdb_change_log;
+create policy cdb_cl_sel on public.cdb_change_log for select to authenticated
+  using (public.cdb_is_lennar());
+drop policy if exists cdb_cl_ins on public.cdb_change_log;
+create policy cdb_cl_ins on public.cdb_change_log for insert to authenticated
+  with check (public.cdb_is_editor());
+
 /* --------------------------------------------------------------- seed ----- */
 -- Make the first admin. Change the email if needed, then this row lets you
 -- sign in and manage everyone else from the in-app Admin page.
