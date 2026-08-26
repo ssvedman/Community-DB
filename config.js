@@ -106,6 +106,7 @@ window.CIS = {
       { k:"individual_banks", label:"Individual Banks" },
       { k:"fision_x",       label:"Fision X" }
     ]},
+    { id:"deck", title:"Site & Model Park (Deck)", kind:"kv", fields:[] },   // populated via data.extra.deck (CIS Portal / Deck merge)
     { id:"note", title:"Notes (Special Circumstances)", kind:"note" }
   ]
 };
