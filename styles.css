@@ -292,3 +292,5 @@ textarea.ed-in{min-height:90px;resize:vertical}
 .pm-t th{text-align:left;font-size:11px;color:var(--mute);padding:4px 8px;border-bottom:1px solid var(--line);background:none;text-transform:none;letter-spacing:0}
 .pm-t td{padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top;background:none;width:auto}
 .pm-t td.k{font-weight:600;white-space:nowrap;background:none;width:auto}
+.exp-menu button.danger-item{color:var(--red);font-weight:600}
+.exp-menu{min-width:190px}

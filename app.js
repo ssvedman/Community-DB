@@ -337,6 +337,14 @@ function groupRowHTML(g){
     <div class="mt">${!multi&&it0.jde?`JDE ${esc(it0.jde)}`:""} ${pills.join(" ")}</div></div>`;
 }
 function wireRows(){ $("list")&&$("list").querySelectorAll(".row").forEach(r=>r.onclick=()=>openDetail(r.dataset.id)); }
+/* dropdown menus in the detail header (Export / Enclaves / More) */
+function wireMenu(btnId, menuId){
+  const b=$(btnId), m=$(menuId); if(!b||!m) return;
+  b.onclick=e=>{ e.stopPropagation();
+    document.querySelectorAll(".exp-menu").forEach(x=>{ if(x!==m) x.classList.add("hidden"); });
+    m.classList.toggle("hidden");
+    if(!m.classList.contains("hidden")) document.addEventListener("click",()=>m.classList.add("hidden"),{once:true}); };
+}
 
 function itemById(id){ return state.items.find(it=>it.id===id); }
 function shownRow(it){ return making() ? (it.draft||it.pub) : (it.pub||it.draft); }
@@ -355,28 +363,44 @@ function openDetail(id){
   const editing = making();
   const actLbl = multi ? encLabel(grp,it) : "";
   const acts=[];
-  if(!editing){   // exports only on the viewer side (a cluster exports the selected enclave)
-    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnExport">&#8681; Export${multi?" "+esc(actLbl):""} &#9662;</button>
-      <div class="exp-menu hidden" id="expMenu"><button data-exp="pdf">PDF</button><button data-exp="xlsx">Excel (.xlsx)</button></div></span>`);
+  if(!editing){   // exports only on the viewer side (a cluster exports the selected enclave, or the whole community)
+    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnExport">&#8681; Export &#9662;</button>
+      <div class="exp-menu hidden" id="expMenu">
+        <button data-exp="pdf">PDF${multi?" — "+esc(actLbl):""}</button>
+        <button data-exp="xlsx">Excel${multi?" — "+esc(actLbl):""}</button>
+        ${multi?`<button data-exp="pdfall">PDF — all enclaves</button>
+        <button data-exp="xlsxall">Excel — all enclaves</button>`:""}
+      </div></span>`);
   }
   if(editing){
-    acts.push(`<button class="btn mini solid" id="btnAddEnc">+ Add enclave</button>`);
-    if(multi) acts.push(`<button class="btn mini ghost" id="btnRenGrp">Rename community</button>`);
-    if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish${multi?" "+esc(actLbl):""}</button>`);
-      acts.push(`<button class="btn mini ghost" id="btnDiscard">Discard draft</button>`); }
-    else if(it.hasPub){ acts.push(`<button class="btn mini" id="btnEdit">Edit${multi?" "+esc(actLbl):""}</button>`); }
-    acts.push(`<button class="btn mini ghost" id="btnActive">${it.active?"Set inactive":"Set active"}</button>`);
-    if(it.hasPub) acts.push(`<button class="btn mini ghost" id="btnUnpublish">Unpublish</button>`);
-    acts.push(`<button class="btn mini danger" id="btnDelete">Delete</button>`);
+    if(it.hasDraft) acts.push(`<button class="btn mini solid" id="btnPublish">Publish${multi?" "+esc(actLbl):""}</button>`);
+    else if(it.hasPub) acts.push(`<button class="btn mini" id="btnEdit">Edit${multi?" "+esc(actLbl):""}</button>`);
+    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnEncMenu">Enclaves &#9662;</button>
+      <div class="exp-menu hidden" id="encMenu">
+        <button data-enc="add">+ Add enclave</button>
+        <button data-enc="attach">Attach existing sheet…</button>
+        ${multi?`<button data-enc="rename">Rename community</button>
+        <button data-enc="detach">Detach ${esc(actLbl)}</button>`:""}
+      </div></span>`);
+    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnMore">More &#9662;</button>
+      <div class="exp-menu hidden" id="moreMenu">
+        ${it.hasDraft?`<button data-more="discard">Discard draft</button>`:""}
+        <button data-more="active">${it.active?"Set inactive":"Set active"}</button>
+        ${it.hasPub?`<button data-more="unpublish">Unpublish</button>`:""}
+        <button data-more="delete" class="danger-item">Delete${multi?" "+esc(actLbl):""}</button>
+      </div></span>`);
   }
   const inactivePill = it.active ? "" : ` <span class="pill off">Inactive</span>`;
   const statusLine = (editing
     ? (it.hasDraft?`<span class="pill draft">Editing draft</span>`:"")+(it.hasPub?` <span class="pill pub">Live version published</span>`:` <span class="pill draft">Not yet published</span>`)
     : `<span class="pill pub">Published</span>`) + inactivePill;
+  const statusMini = (editing
+    ? (it.hasDraft?`<span class="pill draft">Draft</span>`:"")+(it.hasPub?` <span class="pill pub">Published</span>`:` <span class="pill draft">Not published</span>`)
+    : `<span class="pill pub">Published</span>`) + inactivePill;
 
   const heading = multi ? grp.name : ((fval(d,"project_name") || (row&&row.name) || "").trim() || "(untitled)");
   const sub = multi
-    ? `${grp.items.length} enclaves: ${esc(grp.items.map(x=>encLabel(grp,x)).join(" · "))} &nbsp;·&nbsp; ${esc(actLbl)}: ${statusLine}`
+    ? `${grp.items.length} enclaves &nbsp;·&nbsp; <b>${esc(actLbl)}</b> ${statusMini}`
     : `${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}`;
   let h=`<div class="ptitle"><div class="ptitle-main"><button class="mob-back" id="mobBack">&#8592; List</button>
       <div>${esc(heading)}<span class="s">${sub}</span></div></div>
@@ -396,21 +420,29 @@ function openDetail(id){
     if(s.value==="__cmp"){ state.encCompare=true; openDetail(state.sel); }
     else { state.encCompare=false; openDetail(s.value); } });
   wirePlanNames(id, editing);
-  if($("btnExport")){
-    const menu=$("expMenu");
-    $("btnExport").onclick=e=>{ e.stopPropagation(); menu.classList.toggle("hidden"); };
-    menu.querySelectorAll("[data-exp]").forEach(b=>b.onclick=()=>{ menu.classList.add("hidden"); if(b.dataset.exp==="pdf") exportCISpdf(id); else exportCIS(id); });
-    document.addEventListener("click",()=>menu.classList.add("hidden"),{once:true});
-  }
+  wireMenu("btnExport","expMenu");
+  const xm=$("expMenu");
+  if(xm) xm.querySelectorAll("[data-exp]").forEach(b=>b.onclick=()=>{ xm.classList.add("hidden");
+    if(b.dataset.exp==="pdf") exportCISpdf(id);
+    else if(b.dataset.exp==="xlsx") exportCIS(id);
+    else if(b.dataset.exp==="pdfall") exportClusterPDF(grp);
+    else exportClusterXLSX(grp); });
   if(editing){
-    if($("btnAddEnc")) $("btnAddEnc").onclick=()=>addEnclave(id);
-    if($("btnRenGrp")) $("btnRenGrp").onclick=()=>renameGroup(id);
+    wireMenu("btnEncMenu","encMenu"); wireMenu("btnMore","moreMenu");
+    const enm=$("encMenu");
+    if(enm) enm.querySelectorAll("[data-enc]").forEach(b=>b.onclick=()=>{ enm.classList.add("hidden");
+      if(b.dataset.enc==="add") addEnclave(id);
+      else if(b.dataset.enc==="attach") attachEnclave(id);
+      else if(b.dataset.enc==="rename") renameGroup(id);
+      else detachEnclave(id); });
+    const mom=$("moreMenu");
+    if(mom) mom.querySelectorAll("[data-more]").forEach(b=>b.onclick=()=>{ mom.classList.add("hidden");
+      if(b.dataset.more==="discard") discardDraft(id);
+      else if(b.dataset.more==="active") setActive(id, !(itemById(id).active));
+      else if(b.dataset.more==="unpublish") unpublish(id);
+      else deleteCommunity(id); });
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
-    if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
     if($("btnEdit"))    $("btnEdit").onclick=()=>startDraft(id);
-    if($("btnActive")) $("btnActive").onclick=()=>setActive(id, !(itemById(id).active));
-    if($("btnUnpublish")) $("btnUnpublish").onclick=()=>unpublish(id);
-    if($("btnDelete"))  $("btnDelete").onclick=()=>deleteCommunity(id);
     wireEditables(id);
     const ia=$("detail").querySelector("[data-imgadd]"); if(ia) ia.onclick=()=>pickImages(id);
     $("detail").querySelectorAll("[data-capedit]").forEach(inp=>inp.onchange=()=>saveCaption(inp.dataset.capedit,inp.value));
@@ -773,6 +805,138 @@ function exportCISpdf(id){
   doc.save(`CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
+/* ---------- export the whole community — every enclave in one file ----------
+   Shared values print once; values that differ print as a per-enclave
+   comparison; plans / model tables / notes print per enclave when they differ
+   (once when identical). Mirrors the on-screen "Compare all" view. */
+function clusterExportModel(grp){
+  const cx=clusterContext(grp);
+  const S=v=>String(v==null?"":v).trim();
+  const secs=[];
+  SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.kind==="kv"){
+      const shared=[], diff=[];
+      (sec.fields||[]).forEach(f=>{
+        const vals=cx.datas.map(d=>fval(d,f.k));
+        if(!vals.some(v=>S(v))) return;
+        if(!cx.fieldDiff[f.k]) shared.push([f.label, S(vals[0])]);
+        else diff.push([f.label, ...vals.map(S)]);
+      });
+      const lists=cx.datas.map(d=>(d.extra||{})[sec.id]||[]);
+      const labels=[]; lists.forEach(l=>l.forEach(p=>{ if(!labels.some(x=>lc(x)===lc(p[0]))) labels.push(p[0]); }));
+      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?S(p[1]):""; });
+        if(!vals.some(v=>v)) return;
+        if(vals.every(v=>v===vals[0])) shared.push([L, vals[0]]); else diff.push([L, ...vals]); });
+      if(shared.length||diff.length) secs.push({kind:"kv", title:sec.title, shared, diff});
+    } else if(sec.kind==="plans"){
+      const js=cx.datas.map(d=>JSON.stringify(d.plans||[]));
+      const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:cx.datas[0].plans||[]}]
+        : cx.datas.map((d,i)=>({label:cx.labels[i], rows:d.plans||[]}))).filter(t=>t.rows.length);
+      if(tabs.length) secs.push({kind:"plans", title:sec.title, tabs});
+    } else if(sec.kind==="grid"){
+      const rowsOf=d=>sec.rowLabels.map((lbl,ri)=>{ const r=(Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[];
+        return [lbl, ...sec.columns.map((c,ci)=>S(r[ci]))]; }).filter(r=>r.slice(1).some(x=>x));
+      const js=cx.datas.map(d=>JSON.stringify(d[sec.key]||[]));
+      const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
+        : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
+      if(tabs.length) secs.push({kind:"grid", title:sec.title, sec, tabs});
+    } else if(sec.kind==="note"){
+      const vals=cx.datas.map(d=>S(d.note));
+      if(!vals.some(v=>v)) return;
+      const notes=vals.every(v=>v===vals[0]) ? [{label:null, text:vals[0]}]
+        : cx.datas.map((d,i)=>({label:cx.labels[i], text:vals[i]})).filter(n=>n.text);
+      secs.push({kind:"note", title:sec.title, notes});
+    }
+  });
+  return { cx, secs };
+}
+function exportClusterXLSX(grp){
+  if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
+  const { cx, secs }=clusterExportModel(grp);
+  const n=cx.labels.length; const NC=Math.max(5, n+1);
+  const BORDER={ style:"thin", color:{rgb:"D8DEE8"} }, BOX={top:BORDER,bottom:BORDER,left:BORDER,right:BORDER};
+  const stTitle ={ font:{bold:true, sz:15, color:{rgb:"1F3864"}} };
+  const stSub   ={ font:{italic:true, sz:9, color:{rgb:"6B7794"}} };
+  const stSection={ font:{bold:true, sz:11, color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"2E5C8A"}}, alignment:{vertical:"center"} };
+  const stKey   ={ font:{bold:true, sz:10, color:{rgb:"42536E"}}, fill:{fgColor:{rgb:"F4F6FA"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stVal   ={ font:{sz:10, color:{rgb:"16233A"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const stHdr   ={ font:{bold:true, sz:9, color:{rgb:"42536E"}}, fill:{fgColor:{rgb:"F4F6FA"}}, alignment:{vertical:"top", wrapText:true}, border:BOX };
+  const ws={}, merges=[]; let R=0;
+  const put=(r,c,v,s)=>{ ws[XLSX.utils.encode_cell({r,c})]={t:"s", v:(v==null?"":String(v)), s}; };
+  const fullRow=(v,s)=>{ put(R,0,v,s); for(let c=1;c<NC;c++) put(R,c,"",s); merges.push({s:{r:R,c:0},e:{r:R,c:NC-1}}); R++; };
+  const kvRow=(label,val)=>{ put(R,0,label,stKey); put(R,1,val,stVal); for(let c=2;c<NC;c++) put(R,c,"",stVal); merges.push({s:{r:R,c:1},e:{r:R,c:NC-1}}); R++; };
+  const padRow=(cells,keyStyle)=>{ cells.forEach((v,ci)=>put(R,ci,v,ci===0?(keyStyle||stKey):stVal)); for(let c=cells.length;c<NC;c++) put(R,c,"",stVal); R++; };
+  fullRow(grp.name||"Community", stTitle);
+  fullRow(`All enclaves: ${cx.labels.join(" · ")}`, stSub); R++;
+  secs.forEach(s=>{
+    if(s.kind==="kv"){
+      fullRow(s.title, stSection);
+      s.shared.forEach(r=>kvRow(r[0], r[1]));
+      if(s.diff.length){
+        padRow(["Per enclave", ...cx.labels], stHdr);
+        s.diff.forEach(r=>padRow(r));
+      }
+      R++;
+    } else if(s.kind==="plans"){
+      s.tabs.forEach(t=>{
+        fullRow(s.title+(t.label?` — ${t.label}`:""), stSection);
+        SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stHdr)); for(let c=SCHEMA.PLAN_COLS.length;c<NC;c++) put(R,c,"",stHdr); R++;
+        t.rows.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stVal)); for(let c=SCHEMA.PLAN_COLS.length;c<NC;c++) put(R,c,"",stVal); R++; }); R++;
+      });
+    } else if(s.kind==="grid"){
+      s.tabs.forEach(t=>{
+        fullRow(s.title+(t.label?` — ${t.label}`:""), stSection);
+        padRow([s.sec.rowHeader||"", ...s.sec.columns], stHdr);
+        t.rows.forEach(r=>padRow(r)); R++;
+      });
+    } else if(s.kind==="note"){
+      fullRow(s.title, stSection);
+      s.notes.forEach(nt=>{ if(nt.label) kvRow(nt.label, nt.text); else fullRow(nt.text, stVal); }); R++;
+    }
+  });
+  ws["!ref"]=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:Math.max(R-1,0),c:NC-1}});
+  ws["!merges"]=merges;
+  ws["!cols"]=[{wch:30}, ...Array.from({length:NC-1},()=>({wch:Math.max(18, Math.floor(96/(NC-1)))}))];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "CIS — all enclaves");
+  XLSX.writeFile(wb, `CIS_${(grp.name||"Community").replace(/[^\w\-]+/g,"_").slice(0,40)}_all_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+function exportClusterPDF(grp){
+  const jsPDF=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
+  if(!jsPDF){ uiAlert("PDF library didn't load — refresh and try again.","Export"); return; }
+  const { cx, secs }=clusterExportModel(grp);
+  const n=cx.labels.length;
+  const doc=new jsPDF({unit:"pt",format:"letter",orientation:n>=4?"landscape":"portrait"});
+  const M=40; const blue=[46,92,138], grey=[244,246,250], hdTx=[66,83,110];
+  doc.setFont("helvetica","bold").setFontSize(15).text(String(grp.name||"Community"),M,46);
+  doc.setFont("helvetica","normal").setFontSize(9).setTextColor(120)
+     .text(`Community Information Sheet — all enclaves (${cx.labels.join(" · ")})`,M,60); doc.setTextColor(0);
+  let y=76;
+  const table=(title, head2, body, opts)=>{ opts=opts||{};
+    const cols=opts.cols||2;
+    const head=[[{content:title,colSpan:cols,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}]];
+    if(head2) head.push(head2.map(c=>({content:c,styles:{fillColor:grey,textColor:hdTx,fontStyle:"bold"}})));
+    doc.autoTable({ startY:y, head, body,
+      styles:{fontSize:8,cellPadding:3,overflow:"linebreak",valign:"top"},
+      margin:{left:M,right:M}, theme:"grid",
+      columnStyles: opts.columnStyles || {0:{cellWidth:140,fontStyle:"bold",fillColor:grey}} });
+    y=doc.lastAutoTable.finalY+10; };
+  secs.forEach(s=>{
+    if(s.kind==="kv"){
+      if(s.shared.length) table(s.title, null, s.shared);
+      if(s.diff.length) table(s.title+" — by enclave", ["", ...cx.labels], s.diff, {cols:n+1, columnStyles:{0:{cellWidth:110,fontStyle:"bold",fillColor:grey}}});
+    } else if(s.kind==="plans"){
+      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), SCHEMA.PLAN_COLS,
+        t.rows.map(r=>SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||"")), {cols:SCHEMA.PLAN_COLS.length, columnStyles:{}}));
+    } else if(s.kind==="grid"){
+      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), [s.sec.rowHeader||"", ...s.sec.columns],
+        t.rows, {cols:s.sec.columns.length+1, columnStyles:{0:{cellWidth:110,fontStyle:"bold",fillColor:grey}}}));
+    } else if(s.kind==="note"){
+      s.notes.forEach(nt=>table(s.title+(nt.label?` — ${nt.label}`:""), null, [[nt.text]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}}));
+    }
+  });
+  doc.save(`CIS_${(grp.name||"Community").replace(/[^\w\-]+/g,"_").slice(0,40)}_all_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
 /* ---------- What's New (publish change log) ----------
    At publish time the app diffs the draft against the live published version and
    writes one cdb_change_log row: a new CIS published, plans added/removed, or
@@ -936,6 +1100,20 @@ async function addEnclave(id){
   const label=await uiPrompt(`New enclave of "${gname}" — e.g. 60's, 40 Alley Loaded, 25ft TH`,
     {title:"Add enclave",okText:"Create",placeholder:"e.g. 60's"});
   if(label==null||!label.trim()) return;
+  // enclaves are unique within their community — never create a duplicate entry
+  const dup=grp&&grp.items.find(x=>lc(encLabel(grp,x))===lc(label.trim()));
+  if(dup){ uiAlert(`"${gname}" already has an enclave "${encLabel(grp,dup)}". Pick it from the enclave dropdown instead of creating a duplicate.`,"Add enclave"); return; }
+  // a standalone sheet with this exact name already exists → move it in instead of duplicating
+  const nmWanted=(gname+" "+label.trim()).trim();
+  const clash=state.items.find(x=>lc(x.name||"")===lc(nmWanted) && !(grp&&grp.items.some(y=>y.id===x.id)));
+  if(clash){
+    if(await uiConfirm(`A sheet named "${clash.name}" already exists. Attach that sheet to ${gname} instead of creating a new blank enclave? (An enclave lives in exactly one community — it moves, no duplicate.)`,
+        {title:"Sheet already exists",okText:"Attach existing"})){
+      if(await writeCommunityName(clash, gname)){ await loadAll(); render(); openDetail(clash.id); }
+      return;
+    }
+    return;
+  }
   const multi=grp&&grp.items.length>1;
   const cx=multi?clusterContext(grp):null;
   const base=shownRow(it); const bd=(base&&base.data)||{};
@@ -953,12 +1131,64 @@ async function addEnclave(id){
     name:nm, project_name:nm, jde:null, hub:(base&&base.hub)||null, needs_review:true, data };
   await saveDraft(rowNew); await loadAll(); render(); openDetail(rowNew.community_id);
 }
+/* set ONLY data.f.community_name (as a draft) — the record's own name and
+   project name are left alone so the enclave label stays derivable */
+async function writeCommunityName(it, cn){
+  const row=await ensureDraft(it.id); if(!row) return false;
+  row.data=row.data||{}; row.data.f=row.data.f||{};
+  row.data.f.community_name=String(cn||"").trim();
+  if(!String(row.data.f.project_name||"").trim() && (row.name||it.name))
+    row.data.f.project_name=row.name||it.name;
+  await saveDraft(row); return true;
+}
 async function renameGroup(id){
   const grp=clusterFor(id); if(!grp||grp.items.length<2) return;
   const nn=await uiPrompt("Community name (shared across all enclaves — also what the selector shows)",
     {title:"Rename community",okText:"Rename",value:grp.name});
   if(nn==null||!nn.trim()||nn.trim()===grp.name) return;
-  for(const x of grp.items) await setPath(x.id,"f.community_name",nn.trim());
+  for(const x of grp.items) await writeCommunityName(x, nn.trim());
+  await loadAll(); render(); openDetail(id);
+}
+/* attach an existing sheet to this community as an enclave (only its Community
+   Name changes, as a draft — the sheet's data stays exactly as it is).
+   An enclave belongs to exactly ONE community: the record itself is reused, so
+   a sheet already in another community MOVES here — no duplicate is created. */
+async function attachEnclave(id){
+  const it=itemById(id); if(!it) return;
+  const grp=clusterFor(id); const gname=(grp&&grp.name)||clusterNameOf(it)||it.name||"";
+  const inGrp=new Set(grp?grp.items.map(x=>x.id):[id]);
+  const homes=new Map();   // cluster key -> {name, size} so the picker can say where a sheet lives now
+  state.items.forEach(x=>{ const k=clusterKeyOf(x); const h=homes.get(k)||{name:clusterNameOf(x)||x.name||"", n:0}; h.n++; homes.set(k,h); });
+  const cands=state.items.filter(x=>!inGrp.has(x.id)).map(x=>{
+    const h=homes.get(clusterKeyOf(x));
+    return { x, from:(h&&h.n>1)?h.name:null };
+  }).sort((a,b)=>{
+    const am=lc(a.x.name||"").startsWith(lc(gname))?0:1, bm=lc(b.x.name||"").startsWith(lc(gname))?0:1;
+    return am-bm || String(a.x.name||"").localeCompare(String(b.x.name||"")); });
+  if(!cands.length){ uiAlert("There are no other sheets to attach.","Attach sheet"); return; }
+  const opts=cands.map(c=>`<option value="${c.x.id}">${esc(c.x.name||"(untitled)")}${c.x.jde?` — JDE ${esc(c.x.jde)}`:""}${c.from?` — currently in ${esc(c.from)}`:""}</option>`).join("");
+  const pick=await openModal({ title:`Attach a sheet to ${gname}`,
+    body:`<p style="margin:0 0 10px">The chosen sheet becomes an enclave of <b>${esc(gname)}</b>. An enclave belongs to exactly one community — a sheet already in another community <b>moves</b> here rather than being duplicated. Only its Community Name changes, as a draft.</p>
+      <select id="attachSel" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;font:inherit;background:var(--card);color:var(--ink)">${opts}</select>`,
+    buttons:[{label:"Cancel",value:null},
+             {label:"Attach",primary:true,value:card=>{ const s=card.querySelector("#attachSel"); return s?s.value:null; }}] });
+  if(!pick) return;
+  const target=itemById(pick); if(!target) return;
+  const cand=cands.find(c=>c.x.id===pick);
+  if(cand&&cand.from){
+    if(!(await uiConfirm(`"${target.name}" is currently an enclave of ${cand.from}. Attach it to ${gname}? It moves — it will no longer appear under ${cand.from}.`,
+        {title:"Move enclave",okText:"Move it"}))) return;
+  }
+  if(!(await writeCommunityName(target, gname))) return;
+  await loadAll(); render(); openDetail(pick);
+}
+/* the reverse: an enclave becomes its own community again */
+async function detachEnclave(id){
+  const it=itemById(id); const grp=clusterFor(id); if(!it||!grp||grp.items.length<2) return;
+  const own=(it.name||"").trim()||encLabel(grp,it);
+  if(!(await uiConfirm(`Detach "${own}" from ${grp.name}? It becomes its own row in the selector (Community Name set to "${own}", as a draft). The sheet's data is unchanged.`,
+      {title:"Detach enclave",okText:"Detach"}))) return;
+  if(!(await writeCommunityName(it, own))) return;
   await loadAll(); render(); openDetail(id);
 }
 async function startDraft(id){ if(!await ensureDraft(id)) return; await loadAll(); render(); openDetail(id); }
