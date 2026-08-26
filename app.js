@@ -1081,6 +1081,8 @@ function renderAdd(a){
     <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
     <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
     <div id="clPreview"></div>
+    <div class="bar" style="margin-top:12px"><button class="btn mini ghost" id="gmBtn">Grouping migration — align Community Names…</button><span class="hint">One-off: gives each community's enclaves one shared Community Name so they cluster in the selector. Preview first; lands as drafts.</span></div>
+    <div id="gmPreview"></div>
     <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
     <div class="log" id="log"></div>`;
   const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
@@ -1096,6 +1098,7 @@ function renderAdd(a){
   ["dragleave","drop"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.remove("hot");}));
   dropC.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importChecklist(f,logln); });
   fileC.onchange=()=>{ if(fileC.files[0]) importChecklist(fileC.files[0],logln); };
+  if($("gmBtn")) $("gmBtn").onclick=()=>gmRender();
   $("pubAll").onclick=()=>publishAllDrafts(logln);
 }
 
