@@ -269,18 +269,16 @@ textarea.ed-in{min-height:90px;resize:vertical}
 .row:hover .row-dot{box-shadow:0 0 0 2px var(--grey)}
 .row.sel .row-dot{box-shadow:0 0 0 2px var(--blue-050)}
 
-/* ---------- CIS Portal merge preview ---------- */
-.pm-red{color:var(--red)}
-.pm-comm{border:1px solid var(--line);border-radius:8px;margin:8px 0;overflow:hidden}
-.pm-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;text-align:left;background:var(--grey);border:none;padding:8px 12px;font:inherit;color:var(--ink);cursor:pointer}
-.pm-chev{margin-left:auto;color:var(--mute);transition:transform .12s}
-.pm-h.open .pm-chev{transform:rotate(90deg)}
-.pm-b{padding:8px 12px 12px}
-.pm-sub{font-size:11.5px;font-weight:700;color:var(--mute);text-transform:uppercase;letter-spacing:.03em;margin:10px 0 4px}
-.pm-t{width:100%;border-collapse:collapse;font-size:12.5px}
-.pm-t th{text-align:left;font-size:11px;color:var(--mute);padding:4px 8px;border-bottom:1px solid var(--line)}
-.pm-t td{padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-.pm-t td.k{font-weight:600;white-space:nowrap}
-.pm-t td.pm-on{background:var(--greenbg);box-shadow:inset 2px 0 0 var(--green)}
-.pm-t label{display:flex;gap:6px;align-items:flex-start;cursor:pointer}
-.pm-t input[type=radio]{margin-top:2px}
+
+/* ---------- community clusters (enclaves) ---------- */
+.pill.enc{background:#e8f0fb;border-color:#b9d0ee;color:#245}
+.enctag{display:inline-block;margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--blue);background:var(--blue-050);border:1px solid #b9d0ee;border-radius:5px;padding:0 5px;vertical-align:middle;white-space:nowrap}
+.sec-right{display:inline-flex;align-items:center;gap:8px}
+.enc-wrap{display:inline-flex;align-items:center;gap:5px;background:#fff;color:var(--navy);border-radius:6px;padding:2px 4px 2px 10px;font-size:12px;font-weight:700;text-transform:none;letter-spacing:0}
+.enc-sel{border:none;background:transparent;font:inherit;font-weight:700;color:var(--navy);padding:1px 2px;cursor:pointer;outline:none;max-width:230px}
+[data-theme="dark"] .enc-wrap{background:#0f1b2c;color:#e7ecf4;border:1px solid #213247}
+[data-theme="dark"] .enc-sel{color:#e7ecf4}
+.enc-odd{background:var(--amber)}
+[data-theme="dark"] .enc-odd{background:#33280f}
+.enc-chip{display:inline-block;background:#e8f0fb;border:1px solid #b9d0ee;color:#245;border-radius:20px;padding:2px 9px;font-size:11px;margin:1px 3px 1px 0;white-space:nowrap}
+[data-theme="dark"] .enc-chip{background:#12263d;border-color:#2c4a6e;color:#9ec4ef}

@@ -22,7 +22,7 @@ if (!DEMO && window.supabase) {
   });
 }
 
-const state = { changeLog:[], email:null, role:"viewer", mode:"view", view:"browse",
+const state = { changeLog:[], encCompare:false, email:null, role:"viewer", mode:"view", view:"browse",
                 items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[] };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -242,44 +242,99 @@ function render(){
   state.view="browse"; setTab(); renderBrowse(a);
 }
 function updateCounts(){
-  $("cBrowse").textContent = visibleItems().length;
+  $("cBrowse").textContent = clusterList().length;
   const g=$("cGaps"); if(g) g.textContent = making()? gapRows().length : "";
+}
+
+/* ---------------- COMMUNITY CLUSTERS (enclaves) ----------------
+   One community can be split into enclaves (Crossprairie 50's / 32's / 25ft TH).
+   The records already share data.f.community_name while name/project_name differ,
+   so grouping is DERIVED — one cdb_cis row per enclave, no schema change, and
+   drafts/publish/What's New keep working per record. The selector shows one row
+   per group; the sheet shows shared values once and puts an enclave dropdown on
+   sections that hold enclave-specific values. */
+function clusterNameOf(it){ const row=shownRow(it); const d=(row&&row.data)||{};
+  return (fval(d,"community_name")||it.name||"").trim(); }
+function clusterKeyOf(it){ const n=lc(clusterNameOf(it)).trim(); return n||("solo:"+it.id); }
+function encLabel(grp,it){
+  const row=shownRow(it); const gn=(grp.name||"").trim();
+  const cands=[String(it.name||""), String((row&&row.project_name)||""), fval((row&&row.data)||{},"project_name")];
+  for(const c0 of cands){ const c=c0.trim(); if(!c) continue;
+    if(gn && lc(c).startsWith(lc(gn))){ const s=c.slice(gn.length).replace(/^[\s\-–—·:,]+/,"").trim(); if(s) return s; }
+    else if(lc(c)!==lc(gn)) return c;
+  }
+  return it.jde?("JDE "+it.jde):"(enclave)";
+}
+/* the browse-eligibility rules WITHOUT the search filter (search is applied per
+   group so a JDE hit still opens the whole community with that enclave selected) */
+function eligibleItems(){
+  return making() ? (state.draftsOnly ? state.items.filter(it=>it.hasDraft) : state.items)
+                  : state.items.filter(it=>it.hasPub && (state.showInactive || it.active));
+}
+function sortEnclaves(g){ g.items.sort((a,b)=>String(encLabel(g,a)).localeCompare(String(encLabel(g,b)),undefined,{numeric:true})); }
+function clusterList(){
+  const q=lc(state.q);
+  const map=new Map();
+  eligibleItems().forEach(it=>{ const k=clusterKeyOf(it);
+    let g=map.get(k); if(!g){ g={key:k, name:clusterNameOf(it)||it.name||"(untitled)", items:[], hit:null}; map.set(k,g); }
+    g.items.push(it); });
+  const out=[];
+  map.forEach(g=>{ sortEnclaves(g);
+    if(q){ g.hit=g.items.find(it=>itemHay(it).includes(q))||null; if(!g.hit) return; }
+    out.push(g); });
+  out.sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  return out;
+}
+function clusterFor(id){
+  const it=itemById(id); if(!it) return null;
+  const k=clusterKeyOf(it);
+  const g={key:k, name:clusterNameOf(it)||it.name||"(untitled)", items:eligibleItems().filter(x=>clusterKeyOf(x)===k)};
+  if(!g.items.some(x=>x.id===id)) g.items.push(it);
+  sortEnclaves(g);
+  return g;
 }
 
 /* ---------------- BROWSE ---------------- */
 function renderBrowse(a){
-  const items=visibleItems();
+  const groups=clusterList();
   a.innerHTML = `
     <div class="bar">
       <input type="search" id="q" placeholder="Search name, JDE, plan #, or any field (e.g. H006)…" value="${esc(state.q)}">
       ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>
                   <label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="draftsOnly" ${state.draftsOnly?"checked":""}> Drafts only</label>`
                 :`<label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="showInactive" ${state.showInactive?"checked":""}> Show inactive</label>`}
-      <span class="hint">${items.length} ${items.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
+      <span class="hint">${groups.length} ${groups.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
     </div>
     <div class="split" id="split">
-      <div class="list" id="list">${items.map(rowHTML).join("")||`<div class="empty">No communities${state.q?" match your search":making()?" yet — add one":" published yet"}.</div>`}</div>
+      <div class="list" id="list">${groups.map(groupRowHTML).join("")||`<div class="empty">No communities${state.q?" match your search":making()?" yet — add one":" published yet"}.</div>`}</div>
       <div class="panel" id="detail"><div class="empty">Select a community.</div></div>
     </div>`;
-  $("q").addEventListener("input",e=>{ state.q=e.target.value; const l=$("list"); const its=visibleItems();
-    l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); $("cBrowse").textContent=its.length; });
-  const repaintList=()=>{ const l=$("list"); const its=visibleItems(); l.innerHTML=its.map(rowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); updateCounts(); };
+  const repaintList=()=>{ const l=$("list"); const gs=clusterList();
+    l.innerHTML=gs.map(groupRowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); updateCounts(); };
+  $("q").addEventListener("input",e=>{ state.q=e.target.value; repaintList(); });
   if(making()){ $("newComm").onclick=newCommunity;
     if($("draftsOnly")) $("draftsOnly").onclick=e=>{ state.draftsOnly=e.target.checked; repaintList(); }; }
   else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; repaintList(); };
   wireRows();
-  if(state.sel && items.some(it=>it.id===state.sel)) openDetail(state.sel);
+  if(state.sel && groups.some(g=>g.items.some(x=>x.id===state.sel))) openDetail(state.sel);
 }
-function rowHTML(it){
+function groupRowHTML(g){
+  const multi=g.items.length>1;
+  const it0=g.items[0];
+  const selected=g.items.some(it=>it.id===state.sel);
+  const unseen=g.items.some(it=>commUnseen(it.id));
   const pills=[];
-  if(!it.active) pills.push(`<span class="pill off">Inactive</span>`);
-  if(it.source==="DECK") pills.push(`<span class="pill deck">Deck</span>`);
-  if(making()){ if(it.hasDraft) pills.push(`<span class="pill draft">Draft</span>`);
-    if(it.hasPub) pills.push(`<span class="pill pub">Published</span>`); }
-  return `<div class="row ${state.sel===it.id?"sel":""}" data-id="${it.id}">
-    ${commUnseen(it.id)?`<span class="row-dot" title="Updated recently — open to mark as read"></span>`:""}
-    <div class="nm">${esc(it.name||"(untitled)")}</div>
-    <div class="mt">${it.jde?`JDE ${esc(it.jde)}`:""} ${pills.join(" ")}</div></div>`;
+  if(multi) pills.push(`<span class="pill enc">${g.items.length} enclaves</span>`);
+  if(multi ? g.items.every(x=>!x.active) : !it0.active) pills.push(`<span class="pill off">Inactive</span>`);
+  if(!multi && it0.source==="DECK") pills.push(`<span class="pill deck">Deck</span>`);
+  if(making()){ if(g.items.some(x=>x.hasDraft)) pills.push(`<span class="pill draft">Draft</span>`);
+    if(g.items.some(x=>x.hasPub)) pills.push(`<span class="pill pub">Published</span>`); }
+  const label = multi ? g.name : (it0.name||g.name||"(untitled)");
+  const openId = (g.hit&&g.hit.id) || (selected?state.sel:it0.id);
+  return `<div class="row ${selected?"sel":""}" data-id="${openId}" data-gkey="${esc(g.key)}">
+    ${unseen?`<span class="row-dot" title="Updated recently — open to mark as read"></span>`:""}
+    <div class="nm">${esc(label)}</div>
+    <div class="mt">${!multi&&it0.jde?`JDE ${esc(it0.jde)}`:""} ${pills.join(" ")}</div></div>`;
 }
 function wireRows(){ $("list")&&$("list").querySelectorAll(".row").forEach(r=>r.onclick=()=>openDetail(r.dataset.id)); }
 
@@ -288,20 +343,28 @@ function shownRow(it){ return making() ? (it.draft||it.pub) : (it.pub||it.draft)
 
 function openDetail(id){
   state.sel=id; const it=itemById(id); if(!it) return;
-  markCommSeen(id);   // opening a community clears its unread dot
-  $("list")&&$("list").querySelectorAll(".row").forEach(r=>{ r.classList.toggle("sel",r.dataset.id===id);
-    if(r.dataset.id===id){ const dot=r.querySelector(".row-dot"); if(dot) dot.remove(); } });
+  const grp=clusterFor(id)||{key:null,name:it.name,items:[it]};
+  const multi=grp.items.length>1;
+  if(!multi) state.encCompare=false;
+  grp.items.forEach(x=>markCommSeen(x.id));   // opening a community clears its unread dot
+  $("list")&&$("list").querySelectorAll(".row").forEach(r=>{
+    const on = grp.key && r.dataset.gkey ? r.dataset.gkey===grp.key : r.dataset.id===id;
+    r.classList.toggle("sel",on);
+    if(on){ const dot=r.querySelector(".row-dot"); if(dot) dot.remove(); r.dataset.id=id; } });
   const row=shownRow(it); const d=row?row.data||{}:{};
   const editing = making();
+  const actLbl = multi ? encLabel(grp,it) : "";
   const acts=[];
-  if(!editing){   // exports only on the viewer side
-    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnExport">&#8681; Export &#9662;</button>
+  if(!editing){   // exports only on the viewer side (a cluster exports the selected enclave)
+    acts.push(`<span class="exp-wrap"><button class="btn mini ghost" id="btnExport">&#8681; Export${multi?" "+esc(actLbl):""} &#9662;</button>
       <div class="exp-menu hidden" id="expMenu"><button data-exp="pdf">PDF</button><button data-exp="xlsx">Excel (.xlsx)</button></div></span>`);
   }
   if(editing){
-    if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish</button>`);
+    acts.push(`<button class="btn mini solid" id="btnAddEnc">+ Add enclave</button>`);
+    if(multi) acts.push(`<button class="btn mini ghost" id="btnRenGrp">Rename community</button>`);
+    if(it.hasDraft){ acts.push(`<button class="btn mini solid" id="btnPublish">Publish${multi?" "+esc(actLbl):""}</button>`);
       acts.push(`<button class="btn mini ghost" id="btnDiscard">Discard draft</button>`); }
-    else if(it.hasPub){ acts.push(`<button class="btn mini" id="btnEdit">Edit</button>`); }
+    else if(it.hasPub){ acts.push(`<button class="btn mini" id="btnEdit">Edit${multi?" "+esc(actLbl):""}</button>`); }
     acts.push(`<button class="btn mini ghost" id="btnActive">${it.active?"Set inactive":"Set active"}</button>`);
     if(it.hasPub) acts.push(`<button class="btn mini ghost" id="btnUnpublish">Unpublish</button>`);
     acts.push(`<button class="btn mini danger" id="btnDelete">Delete</button>`);
@@ -311,19 +374,27 @@ function openDetail(id){
     ? (it.hasDraft?`<span class="pill draft">Editing draft</span>`:"")+(it.hasPub?` <span class="pill pub">Live version published</span>`:` <span class="pill draft">Not yet published</span>`)
     : `<span class="pill pub">Published</span>`) + inactivePill;
 
-  const heading = (fval(d,"project_name") || (row&&row.name) || "").trim() || "(untitled)";
+  const heading = multi ? grp.name : ((fval(d,"project_name") || (row&&row.name) || "").trim() || "(untitled)");
+  const sub = multi
+    ? `${grp.items.length} enclaves: ${esc(grp.items.map(x=>encLabel(grp,x)).join(" · "))} &nbsp;·&nbsp; ${esc(actLbl)}: ${statusLine}`
+    : `${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}`;
   let h=`<div class="ptitle"><div class="ptitle-main"><button class="mob-back" id="mobBack">&#8592; List</button>
-      <div>${esc(heading)}<span class="s">${row&&row.jde?"JDE "+esc(row.jde):""} · ${statusLine}</span></div></div>
+      <div>${esc(heading)}<span class="s">${sub}</span></div></div>
       <div class="acts">${acts.join("")}</div></div>`;
 
-  SCHEMA.SECTIONS.forEach(sec=>{ h+=renderSection(sec, d, editing, id); });
-  // images
-  h+=`<div class="sec"><span>Images</span>${editing?`<button data-imgadd>Add image</button>`:""}</div>`;
+  if(!multi){ SCHEMA.SECTIONS.forEach(sec=>{ h+=renderSection(sec, d, editing, id); }); }
+  else { const cx=clusterContext(grp); SCHEMA.SECTIONS.forEach(sec=>{ h+=renderClusterSection(sec, cx, it, editing); }); }
+  // images (per enclave — a cluster shows the selected enclave's images)
+  h+=`<div class="sec"><span>Images${multi?` — ${esc(actLbl)}`:""}</span><span class="sec-right">${editing?`<button data-imgadd>Add image</button>`:""}${multi?encWrapHTML(grp,it):""}</span></div>`;
   h+=imagesHTML(id, editing);
   $("detail").innerHTML=h;
   const sp=$("split"); if(sp) sp.classList.add("show-detail");        // mobile: reveal detail
   const va=$("viewArea"); if(va) va.classList.add("mob-detail");      // mobile: hide the search bar
   if($("mobBack")) $("mobBack").onclick=()=>{ const s=$("split"); if(s) s.classList.remove("show-detail"); if(va) va.classList.remove("mob-detail"); };
+  // enclave dropdowns: one selection drives every section (viewer and maker alike)
+  $("detail").querySelectorAll("[data-encsel]").forEach(s=>s.onchange=()=>{
+    if(s.value==="__cmp"){ state.encCompare=true; openDetail(state.sel); }
+    else { state.encCompare=false; openDetail(s.value); } });
   wirePlanNames(id, editing);
   if($("btnExport")){
     const menu=$("expMenu");
@@ -332,6 +403,8 @@ function openDetail(id){
     document.addEventListener("click",()=>menu.classList.add("hidden"),{once:true});
   }
   if(editing){
+    if($("btnAddEnc")) $("btnAddEnc").onclick=()=>addEnclave(id);
+    if($("btnRenGrp")) $("btnRenGrp").onclick=()=>renameGroup(id);
     if($("btnPublish")) $("btnPublish").onclick=()=>publish(id);
     if($("btnDiscard")) $("btnDiscard").onclick=()=>discardDraft(id);
     if($("btnEdit"))    $("btnEdit").onclick=()=>startDraft(id);
@@ -348,10 +421,13 @@ function openDetail(id){
 
 /* ---------- section renderers (data model: data.f / data.plans / data.note / data.extra) ---------- */
 function fval(d,k){ const v=(d.f||{})[k]; return (v==null||v==="")?"":String(v); }
-function evCell(id,path,v){ // editable value span
-  return `<span class="ev" data-ev="${esc(path)}" data-id="${id}">${v?esc(v):'<span class="none">—</span>'}</span>`;
+function evCell(id,path,v,shared){ // editable value span; shared=1 asks "all enclaves or just this one" on commit
+  return `<span class="ev" data-ev="${esc(path)}" data-id="${id}"${shared?' data-shared="1"':""}>${v?esc(v):'<span class="none">—</span>'}</span>`;
 }
-function renderSection(sec, d, editing, id){
+/* One section's header button + body, so the single view and the cluster view
+   (which puts an enclave dropdown in the header) share the exact same bodies.
+   Returns {btn, body}; body==="" means the section is hidden for this record. */
+function sectionParts(sec, d, editing, id){
   if(sec.kind==="kv"){
     let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly)) return "";
       const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v)
@@ -359,35 +435,154 @@ function renderSection(sec, d, editing, id){
       return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td></tr>`; }).join("");
     const ex=(d.extra&&d.extra[sec.id])||[];
     ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td></tr>`; });
-    if(!rows && !editing) return "";
-    return `<div class="sec"><span>${esc(sec.title)}</span></div><table>${rows}</table>`;
+    return { btn:"", body: rows?`<table>${rows}</table>`:(editing?`<table></table>`:"") };
   }
   if(sec.kind==="plans"){
     const arr=Array.isArray(d.plans)?d.plans:[]; const cols=SCHEMA.PLAN_COLS;
-    if(!arr.length && !editing) return "";
+    if(!arr.length && !editing) return { btn:"", body:"" };
     let head=`<tr>${cols.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
     const cell=(ri,ci,raw)=>{ const v=raw||"";
       if(ci===1){ // Plan Name / footprint: truncated label, click opens a popup (view or edit)
         return `<td class="v"><span class="plname" data-planopen="${ri}" data-full="${esc(v)}">${v?esc(v):'<span class="none">—</span>'}</span></td>`; }
       return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
     let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
-    return `<div class="sec"><span>${esc(sec.title)}</span>${editing?`<button data-pladd="1">Add row</button>`:""}</div><div class="tscroll"><table class="plans-t">${head}${body}</table></div>`;
+    return { btn: editing?`<button data-pladd="1">Add row</button>`:"",
+             body: `<div class="tscroll"><table class="plans-t">${head}${body}</table></div>` };
   }
   if(sec.kind==="grid"){
     const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
-    const anyVal=arr.some(r=>Array.isArray(r)&&r.some(x=>x!=null&&x!==""));
-    if(!anyVal && !editing) return "";
+    const rowHas=ri=>{ const r=arr[ri]||[]; return Array.isArray(r)&&r.some(x=>x!=null&&String(x).trim()!==""); };
+    const anyVal=sec.rowLabels.some((_,ri)=>rowHas(ri));
+    if(!anyVal && !editing) return { btn:"", body:"" };
+    // Blank rows never show on the published/viewer side (same as the kv lines).
+    // In maker mode the default is the filled rows plus ONE blank entry row;
+    // "Show all rows" reveals the rest of the labels when they're needed.
+    const showAll = editing && state.gridShowAll && state.gridShowAll[sec.key];
+    let blankShown=false;
+    const visible=sec.rowLabels.map((lbl,ri)=>{
+      if(rowHas(ri)) return true;
+      if(!editing) return false;
+      if(showAll) return true;
+      if(!blankShown){ blankShown=true; return true; }
+      return false; });
+    const hiddenN=editing?visible.filter(v=>!v).length:0;
     let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}</tr>`;
-    let body=sec.rowLabels.map((lbl,ri)=>{ const row=arr[ri]||[];
+    let body=sec.rowLabels.map((lbl,ri)=>{ if(!visible[ri]) return ""; const row=arr[ri]||[];
       return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}</tr>`; }).join("");
-    return `<div class="sec"><span>${esc(sec.title)}</span></div><div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>`;
+    return { btn: editing?`<button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"",
+             body: `<div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>` };
   }
   if(sec.kind==="note"){
     const t=(d.note==null?"":String(d.note));
-    if(!editing && !t) return "";
-    return `<div class="sec"><span>${esc(sec.title)}</span></div><table><tr><td class="v">${editing?evCell(id,"note",t):(esc(t)||'<span class="none">—</span>')}</td></tr></table>`;
+    if(!editing && !t) return { btn:"", body:"" };
+    return { btn:"", body:`<table><tr><td class="v">${editing?evCell(id,"note",t):(esc(t)||'<span class="none">—</span>')}</td></tr></table>` };
   }
-  return "";
+  return { btn:"", body:"" };
+}
+function renderSection(sec, d, editing, id){
+  const p=sectionParts(sec, d, editing, id);
+  if(!p.body) return "";
+  return `<div class="sec"><span>${esc(sec.title)}</span>${p.btn}</div>${p.body}`;
+}
+
+/* ---------- cluster (enclave) rendering ---------- */
+/* Per-section shared-vs-different analysis of a group's records. */
+function clusterContext(grp){
+  const rows=grp.items.map(x=>shownRow(x));
+  const datas=rows.map(r=>(r&&r.data)||{});
+  const S=v=>String(v==null?"":v).trim();
+  const same=vals=>vals.every(v=>S(v)===S(vals[0]));
+  const cx={ grp, rows, datas, labels:grp.items.map(x=>encLabel(grp,x)), diff:{}, fieldDiff:{}, extraDiff:{} };
+  SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.kind==="kv"){
+      let dif=false;
+      (sec.fields||[]).forEach(f=>{ const vals=datas.map(d=>fval(d,f.k)); const dd=!same(vals);
+        cx.fieldDiff[f.k]=dd; if(dd && f.k!=="rev_date") dif=true; });   // rev_date is a publish stamp — never the reason for a dropdown
+      const exJ=datas.map(d=>JSON.stringify((d.extra||{})[sec.id]||[]));
+      cx.extraDiff[sec.id]=!exJ.every(x=>x===exJ[0]);
+      if(cx.extraDiff[sec.id]) dif=true;
+      cx.diff[sec.id]=dif;
+    } else if(sec.kind==="plans"){ const js=datas.map(d=>JSON.stringify(d.plans||[])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
+    else if(sec.kind==="grid"){ const js=datas.map(d=>JSON.stringify(d[sec.key]||[])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
+    else if(sec.kind==="note"){ cx.diff[sec.id]=!same(datas.map(d=>d.note||"")); }
+  });
+  return cx;
+}
+function encWrapHTML(grp, act){
+  const opts=grp.items.map(x=>`<option value="${x.id}"${(!state.encCompare&&x.id===act.id)?" selected":""}>${esc(encLabel(grp,x))}</option>`).join("");
+  return `<span class="enc-wrap">Enclave<select class="enc-sel" data-encsel>${opts}<option value="__cmp"${state.encCompare?" selected":""}>Compare all</option></select></span>`;
+}
+function encTag(lbl){ return `<span class="enctag">${esc(lbl)}</span>`; }
+/* kv body for a cluster: shared rows render once (editing asks all-or-one), rows
+   that differ show the selected enclave's value with a small enclave tag. */
+function kvClusterBody(sec, cx, ai, editing){
+  const d=cx.datas[ai]; const id=cx.grp.items[ai].id; const lbl=cx.labels[ai];
+  let rows=sec.fields.map(f=>{
+    const v=fval(d,f.k); const fd=!!cx.fieldDiff[f.k];
+    if(!v && !editing && !fd) return "";                            // shared blank: hidden as always
+    const showDash = !v && !editing && fd;                          // differs elsewhere: keep the row so switching enclaves makes sense
+    const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v,!fd)
+               : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>`
+                             : (esc(v)||(showDash?'<span class="none">—</span>':"")));
+    if(!disp) return "";
+    return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp}${fd?encTag(lbl):""}</td></tr>`; }).join("");
+  const exDiff=!!cx.extraDiff[sec.id];
+  const ex=(d.extra&&d.extra[sec.id])||[];
+  ex.forEach((pair,xi)=>{ const v=pair[1]||"";
+    rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v,!exDiff):esc(v)}${exDiff?encTag(lbl):""}</td></tr>`; });
+  return rows?`<table>${rows}</table>`:(editing?`<table></table>`:"");
+}
+/* read-only side-by-side of just the values that differ inside one section */
+function compareBody(sec, cx){
+  const n=cx.labels.length; const S=v=>String(v==null?"":v).trim();
+  const odd=vals=>{ if(n<3) return -1; const c={}; vals.forEach(v=>c[S(v)]=(c[S(v)]||0)+1);
+    const ks=Object.keys(c); if(ks.length!==2) return -1; const rare=ks.find(k=>c[k]===1);
+    return rare==null?-1:vals.findIndex(v=>S(v)===rare); };
+  const tds=vals=>{ const o=odd(vals); return vals.map((v,i)=>`<td class="v${i===o?" enc-odd":""}">${esc(S(v))||'<span class="none">—</span>'}</td>`).join(""); };
+  let head=`<tr><th style="min-width:170px"></th>${cx.labels.map(l=>`<th>${esc(l)}</th>`).join("")}</tr>`;
+  let rows="";
+  if(sec.kind==="kv"){
+    (sec.fields||[]).forEach(f=>{ if(!cx.fieldDiff[f.k]) return;
+      rows+=`<tr><td class="k">${esc(f.label)}</td>${tds(cx.datas.map(d=>fval(d,f.k)))}</tr>`; });
+    if(cx.extraDiff[sec.id]){
+      const lists=cx.datas.map(d=>(d.extra||{})[sec.id]||[]);
+      const labels=[]; lists.forEach(l=>l.forEach(p=>{ if(!labels.some(x=>lc(x)===lc(p[0]))) labels.push(p[0]); }));
+      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?p[1]:""; });
+        if(vals.every(v=>S(v)===S(vals[0]))) return;
+        rows+=`<tr><td class="k">${esc(L)}</td>${tds(vals)}</tr>`; });
+    }
+  } else if(sec.kind==="plans"){
+    rows+=`<tr><td class="k">Plans</td>${cx.datas.map(d=>{
+      const arr=Array.isArray(d.plans)?d.plans:[];
+      return `<td class="v">${arr.map(r=>`<span class="enc-chip">${esc([r[0],(r[1]||"").split("(")[0].trim()].filter(Boolean).join(" "))}</span>`).join("")||'<span class="none">—</span>'}</td>`; }).join("")}</tr>`;
+  } else if(sec.kind==="grid"){
+    sec.rowLabels.forEach((lbl,ri)=>{
+      const vals=cx.datas.map(d=>((Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[]).filter(x=>S(x)).join(" · "));
+      if(vals.every(v=>!v) || vals.every(v=>v===vals[0])) return;
+      rows+=`<tr><td class="k">${esc(lbl)}</td>${tds(vals)}</tr>`; });
+  } else if(sec.kind==="note"){
+    rows+=`<tr><td class="k">Notes</td>${cx.datas.map(d=>`<td class="v">${esc(String(d.note||""))||'<span class="none">—</span>'}</td>`).join("")}</tr>`;
+  }
+  if(!rows) rows=`<tr><td class="v" colspan="${n+1}"><span class="none">No differing values in this section.</span></td></tr>`;
+  return `<div class="tscroll"><table class="plans-t">${head}${rows}</table></div>`;
+}
+function renderClusterSection(sec, cx, act, editing){
+  const grp=cx.grp;
+  const ai=grp.items.findIndex(x=>x.id===act.id); if(ai<0) return "";
+  const d=cx.datas[ai]; const id=act.id;
+  const dif=!!cx.diff[sec.id];
+  const head=btn=>`<div class="sec"><span>${esc(sec.title)}</span><span class="sec-right">${btn||""}${dif?encWrapHTML(grp,act):""}</span></div>`;
+  if(dif && state.encCompare) return head("")+compareBody(sec, cx);
+  if(sec.kind==="kv"){
+    const body=kvClusterBody(sec, cx, ai, editing);
+    if(!body) return "";
+    return head("")+body;
+  }
+  const p=sectionParts(sec, d, editing, id);
+  if(!dif) return p.body?`<div class="sec"><span>${esc(sec.title)}</span>${p.btn}</div>${p.body}`:"";
+  // section differs: keep the header (with dropdown) even when this enclave has nothing yet
+  const body=p.body || `<table><tr><td class="v"><span class="none">— none for ${esc(cx.labels[ai])} —</span></td></tr></table>`;
+  return head(p.btn)+body;
 }
 
 /* ---------- inline editing (maker) ---------- */
@@ -395,6 +590,8 @@ function wireEditables(id){
   $("detail").querySelectorAll(".ev").forEach(sp=>sp.onclick=()=>beginEdit(sp,id));
   const add=$("detail").querySelector("[data-pladd]"); if(add) add.onclick=()=>plAdd(id);
   $("detail").querySelectorAll("[data-pldel]").forEach(b=>b.onclick=()=>plDel(id,+b.dataset.pldel));
+  $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
+    state.gridShowAll=state.gridShowAll||{}; state.gridShowAll[b.dataset.gridall]=!state.gridShowAll[b.dataset.gridall]; openDetail(id); });
 }
 // Plan Name / footprint popup — read-only in viewer, editable textarea in maker.
 function wirePlanNames(id, editing){
@@ -405,20 +602,38 @@ function wirePlanNames(id, editing){
     else { uiAlert(cur||"—","Plan name / footprint"); }
   });
 }
+/* Commit an edited value. A value marked shared (identical across a cluster's
+   enclaves) asks whether the change applies to every enclave or just this one —
+   "just this one" simply makes the field enclave-specific from then on. */
+async function commitPath(id, path, value, shared, cur){
+  if(shared && String(value)!==String(cur||"")){
+    const grp=clusterFor(id);
+    if(grp && grp.items.length>1){
+      const c=await openModal({ title:"Shared value",
+        body:`<p>This value is the same in every enclave of <b>${esc(grp.name)}</b>. Apply the change to:</p>`,
+        buttons:[{label:"Cancel",value:"x"},
+                 {label:`Only ${encLabel(grp,itemById(id))}`,value:"one"},
+                 {label:`All ${grp.items.length} enclaves`,value:"all",primary:true}] });
+      if(c==null||c==="x") return;
+      if(c==="all"){ for(const x of grp.items) await setPath(x.id,path,value); return; }
+    }
+  }
+  await setPath(id,path,value);
+}
 function beginEdit(sp,id){
-  const path=sp.dataset.ev; const cur=getPath(id,path);
-  const p=path.split("."); if(p[0]==="f" && DATE_KEYS[p[1]]) return beginDateEdit(sp,id,path,cur);
+  const path=sp.dataset.ev; const cur=getPath(id,path); const shared=sp.dataset.shared==="1";
+  const p=path.split("."); if(p[0]==="f" && DATE_KEYS[p[1]]) return beginDateEdit(sp,id,path,cur,shared);
   const long=(path==="note");
   const inp=document.createElement(long?"textarea":"input"); inp.className="ed-in"; inp.value=cur||"";
   sp.replaceWith(inp); inp.focus();
   let done=false;
-  const finish=async(save)=>{ if(done) return; done=true; if(save){ await setPath(id,path,inp.value); } openDetail(id); };
+  const finish=async(save)=>{ if(done) return; done=true; if(save){ await commitPath(id,path,inp.value,shared,cur); } openDetail(id); };
   inp.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!long){ e.preventDefault(); finish(true);} else if(e.key==="Escape") finish(false); });
   inp.addEventListener("blur",()=>finish(true));
 }
 // Date fields: one text box (free typing, incl. "TBD") with a calendar button in
 // the corner that opens a native picker. Always saved as M.D.YY.
-function beginDateEdit(sp,id,path,cur){
+function beginDateEdit(sp,id,path,cur,shared){
   const wrap=document.createElement("span"); wrap.className="ev-date";
   const txt=document.createElement("input"); txt.type="text"; txt.className="ed-in"; txt.value=cur||""; txt.placeholder="M.D.YY or TBD";
   const btn=document.createElement("button"); btn.type="button"; btn.className="ed-calbtn"; btn.title="Pick a date";
@@ -427,7 +642,7 @@ function beginDateEdit(sp,id,path,cur){
   wrap.appendChild(txt); wrap.appendChild(btn); wrap.appendChild(cal);
   sp.replaceWith(wrap); txt.focus(); txt.select();
   let done=false;
-  const finish=async(save)=>{ if(done) return; done=true; if(save){ await setPath(id,path,txt.value); } openDetail(id); };
+  const finish=async(save)=>{ if(done) return; done=true; if(save){ await commitPath(id,path,txt.value,shared,cur); } openDetail(id); };
   btn.addEventListener("click",()=>{ try{ cal.showPicker(); }catch(e){ cal.focus(); cal.click(); } });
   cal.addEventListener("change",()=>{ if(cal.value){ txt.value=isoToDate(cal.value); finish(true); } });
   txt.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); finish(true);} else if(e.key==="Escape") finish(false); });
@@ -495,7 +710,8 @@ function exportCIS(id){
       const arr=d[sec.key]||[]; if(!arr.some(r=>Array.isArray(r)&&r.some(x=>x))) return;
       fullRow(sec.title, stSection);
       put(R,0,sec.rowHeader||"",stPHdr); sec.columns.forEach((c,ci)=>put(R,ci+1,c,stPHdr)); R++;
-      sec.rowLabels.forEach((lbl,ri)=>{ const row=arr[ri]||[]; put(R,0,lbl,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,row[ci]||"",stPCell)); R++; }); R++;
+      sec.rowLabels.forEach((lbl,ri)=>{ const row=arr[ri]||[]; if(!(Array.isArray(row)&&row.some(x=>x!=null&&String(x).trim()!==""))) return;   // blank rows don't print
+        put(R,0,lbl,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,row[ci]||"",stPCell)); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
       fullRow(sec.title, stSection); fullRow(t, stVal); R++;
@@ -544,7 +760,8 @@ function exportCISpdf(id){
     } else if(sec.kind==="grid"){
       const arr=d[sec.key]||[];
       if(arr.some(r=>Array.isArray(r)&&r.some(x=>x))){
-        const body=sec.rowLabels.map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; });
+        const body=sec.rowLabels.map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; })
+          .filter(row=>row.slice(1).some(x=>String(x==null?"":x).trim()!==""));   // blank rows don't print
         sectionTable(sec.title, body, { cols:5, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
           {content:sec.title,colSpan:5,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
           [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...sec.columns.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
@@ -712,6 +929,38 @@ async function newCommunity(){
     data:{ f:{ [SCHEMA.IDENTITY.name]:name.trim() }, plans:[], model:[], note:"", extra:{} } };
   await saveDraft(row); await loadAll(); render(); openDetail(row.community_id);
 }
+/* ---------- enclaves: add / rename group ---------- */
+async function addEnclave(id){
+  const it=itemById(id); if(!it) return;
+  const grp=clusterFor(id); const gname=(grp&&grp.name)||clusterNameOf(it)||it.name||"";
+  const label=await uiPrompt(`New enclave of "${gname}" — e.g. 60's, 40 Alley Loaded, 25ft TH`,
+    {title:"Add enclave",okText:"Create",placeholder:"e.g. 60's"});
+  if(label==null||!label.trim()) return;
+  const multi=grp&&grp.items.length>1;
+  const cx=multi?clusterContext(grp):null;
+  const base=shownRow(it); const bd=(base&&base.data)||{};
+  const nm=(gname+" "+label.trim()).trim();
+  // copy the SHARED values in; per-enclave sections start empty for the maker to fill
+  const data={ f:{}, plans:[], model:[], note:"", extra:{} };
+  SCHEMA.SECTIONS.forEach(sec=>{ (sec.fields||[]).forEach(f=>{
+    if(f.k==="rev_date") return;
+    if(cx ? !cx.fieldDiff[f.k] : true){ const v=fval(bd,f.k); if(v) data.f[f.k]=v; } }); });
+  delete data.f.jde;                       // always enclave-specific
+  data.f.community_name=gname; data.f.project_name=nm;
+  Object.keys(bd.extra||{}).forEach(sid=>{ if(!cx || !cx.extraDiff[sid]) data.extra[sid]=JSON.parse(JSON.stringify(bd.extra[sid]||[])); });
+  if(!cx || !cx.diff.note) data.note=bd.note||"";
+  const rowNew={ community_id:uid(), status:"draft", source:(base&&base.source)||"manual",
+    name:nm, project_name:nm, jde:null, hub:(base&&base.hub)||null, needs_review:true, data };
+  await saveDraft(rowNew); await loadAll(); render(); openDetail(rowNew.community_id);
+}
+async function renameGroup(id){
+  const grp=clusterFor(id); if(!grp||grp.items.length<2) return;
+  const nn=await uiPrompt("Community name (shared across all enclaves — also what the selector shows)",
+    {title:"Rename community",okText:"Rename",value:grp.name});
+  if(nn==null||!nn.trim()||nn.trim()===grp.name) return;
+  for(const x of grp.items) await setPath(x.id,"f.community_name",nn.trim());
+  await loadAll(); render(); openDetail(id);
+}
 async function startDraft(id){ if(!await ensureDraft(id)) return; await loadAll(); render(); openDetail(id); }
 async function discardDraft(id){
   if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
@@ -832,11 +1081,6 @@ function renderAdd(a){
     <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
     <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
     <div id="clPreview"></div>
-    <div class="note" style="margin-top:14px"><b>Merge a CIS Portal export (.html)</b> — CIS sheets + deck records. Blanks are filled, real differences are flagged as <b>conflicts you resolve first</b>, and everything lands as drafts.</div>
-    <div class="drop" id="dropPm"><b>Drop the CIS Portal .html here</b><div class="hint">or click to browse — full conflict review before anything is written</div><input type="file" id="filePm" accept=".html,.htm" hidden></div>
-    <div id="pmPreview"></div>
-    <div class="bar" style="margin-top:12px"><button class="btn mini ghost" id="pmThBtn">TH roof decking: 7/16" → 15/32"…</button><span class="hint">Preview and update roof sheathing for every townhome community. Run it after applying a merge so it sees the merged values.</span></div>
-    <div id="pmTH"></div>
     <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
     <div class="log" id="log"></div>`;
   const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
@@ -852,13 +1096,6 @@ function renderAdd(a){
   ["dragleave","drop"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.remove("hot");}));
   dropC.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importChecklist(f,logln); });
   fileC.onchange=()=>{ if(fileC.files[0]) importChecklist(fileC.files[0],logln); };
-  const dropP=$("dropPm"), fileP=$("filePm");
-  dropP.onclick=()=>fileP.click();
-  ["dragover","dragenter"].forEach(ev=>dropP.addEventListener(ev,e=>{e.preventDefault();dropP.classList.add("hot");}));
-  ["dragleave","drop"].forEach(ev=>dropP.addEventListener(ev,e=>{e.preventDefault();dropP.classList.remove("hot");}));
-  dropP.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.html?$/i.test(f.name)); if(f) pmImportPortalFile(f,logln); });
-  fileP.onchange=()=>{ if(fileP.files[0]) pmImportPortalFile(fileP.files[0],logln); };
-  $("pmThBtn").onclick=()=>pmRenderTH();
   $("pubAll").onclick=()=>publishAllDrafts(logln);
 }
 
