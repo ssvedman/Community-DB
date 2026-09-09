@@ -23,7 +23,8 @@ if (!DEMO && window.supabase) {
 }
 
 const state = { changeLog:[], encCompare:false, email:null, role:"viewer", mode:"view", view:"browse",
-                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[] };
+                items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[],
+                pubq:[], pubqOpen:true, pubqBusy:false };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
@@ -152,7 +153,7 @@ async function enterApp(email){
   $("themeBtn").textContent=document.documentElement.getAttribute("data-theme")==="dark"?"Light":"Dark";
   if(isEditor()){ $("modeToggle").classList.remove("hidden"); }
   if(isAdmin()) $("adminLink").classList.remove("hidden");
-  wireChrome(); syncEditorTabs();
+  wireChrome(); syncEditorTabs(); pubqLoad();
   await loadAll(); render(); refreshWhatsNewBadge();
 }
 // Gaps + Add/import live on the maker side only — hidden in Viewer mode.
@@ -233,7 +234,7 @@ function visibleItems(){
 
 /* ---------------- RENDER ROUTER ---------------- */
 function render(){
-  updateCounts();
+  updateCounts(); renderPubq();
   const a=$("viewArea");
   a.classList.remove("mob-detail");   // reset mobile detail state on any view change
   if(state.view==="browse") return renderBrowse(a);
@@ -758,11 +759,17 @@ function exportCIS(id){
   XLSX.writeFile(wb, `CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
-/* ---------- export a CIS to PDF (jsPDF + autotable) ---------- */
-function exportCISpdf(id){
+/* ---------- export a CIS to PDF (jsPDF + autotable) ----------
+   opts.preferPublished picks the live row over an in-progress draft (the publish
+   queue downloads what was published, even if the maker has since re-drafted).
+   opts.quiet suppresses the modal so batch callers can report once at the end.
+   Returns true when a file was saved. */
+function exportCISpdf(id, opts){
+  opts=opts||{};
   const jsPDF=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
-  const it=itemById(id); const row=shownRow(it); if(!row) return;
-  if(!jsPDF){ uiAlert("PDF library didn't load — refresh and try again.","Export"); return; }
+  const it=itemById(id); if(!it) return false;
+  const row=opts.preferPublished ? (it.pub||it.draft) : shownRow(it); if(!row) return false;
+  if(!jsPDF){ if(!opts.quiet) uiAlert("PDF library didn't load — refresh and try again.","Export"); return false; }
   const d=row.data||{}; const doc=new jsPDF({unit:"pt",format:"letter"});
   const M=40; const navy=[31,56,100], blue=[46,92,138], grey=[244,246,250];
   doc.setFont("helvetica","bold").setFontSize(15).text(String(row.name||"CIS"),M,46);
@@ -803,6 +810,7 @@ function exportCISpdf(id){
     }
   });
   doc.save(`CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.pdf`);
+  return true;
 }
 
 /* ---------- export the whole community — every enclave in one file ----------
@@ -937,6 +945,112 @@ function exportClusterPDF(grp){
   doc.save(`CIS_${(grp.name||"Community").replace(/[^\w\-]+/g,"_").slice(0,40)}_all_${new Date().toISOString().slice(0,10)}.pdf`);
 }
 
+/* ---------- publish queue (floating sidebar) ----------
+   Every CIS a maker publishes drops into a running list so a session's worth of
+   publishes can be exported in one pass. Persisted per signed-in user so a
+   refresh (or a sign-out mid-batch) doesn't lose the list. Editors only —
+   viewers never publish, so they never see the panel. */
+const PUBQ_MAX=200;
+function pubqKey(){ return "cdb_pubq:"+lc(state.email||"anon"); }
+function pubqLoad(){
+  try{ const a=JSON.parse(localStorage.getItem(pubqKey())||"[]");
+    state.pubq = Array.isArray(a) ? a.filter(e=>e&&e.id).slice(0,PUBQ_MAX) : []; }
+  catch(e){ state.pubq=[]; }
+  try{ state.pubqOpen = localStorage.getItem("cdb_pubq_open")!=="0"; }catch(e){}
+}
+function pubqSave(){ try{ localStorage.setItem(pubqKey(), JSON.stringify(state.pubq)); }catch(e){} }
+/* newest first; re-publishing something already queued refreshes it in place
+   rather than adding a second row that would download the same PDF twice */
+function pubqAdd(id, name, jde){
+  if(!id) return;
+  const e={ id, name:String(name||"(untitled)"), jde:String(jde||""), at:new Date().toISOString() };
+  state.pubq=[e, ...state.pubq.filter(x=>x.id!==id)].slice(0,PUBQ_MAX);
+  pubqSave(); renderPubq();
+}
+function pubqRemove(id){ state.pubq=state.pubq.filter(x=>x.id!==id); pubqSave(); renderPubq(); }
+/* A queued row goes stale once a draft exists for that CIS again — the PDF you'd
+   download is the published version, which is no longer the newest work.
+   Publishing clears the draft, so a draft newer than the queue stamp can only be
+   an edit made after that publish. Republishing refreshes the stamp and the row,
+   which clears the chip. */
+function pubqStale(e){
+  const it=itemById(e.id); if(!it||!it.draft) return false;
+  const u=it.draft.updated_at; if(!u||!e.at) return true;
+  return new Date(u).getTime() >= new Date(e.at).getTime()-1000;   // 1s slack for clock skew
+}
+async function pubqClear(){
+  if(!state.pubq.length) return;
+  if(!(await uiConfirm(`Clear all ${state.pubq.length} ${state.pubq.length===1?"community":"communities"} from the publish list? Nothing is unpublished — this only empties the list.`,
+      {title:"Clear publish list",okText:"Clear list",danger:true}))) return;
+  state.pubq=[]; pubqSave(); renderPubq();
+}
+function pubqToggle(){ state.pubqOpen=!state.pubqOpen;
+  try{ localStorage.setItem("cdb_pubq_open", state.pubqOpen?"1":"0"); }catch(e){}
+  renderPubq(); }
+
+/* Downloads one PDF per queued CIS, exactly like Export → PDF does for a single
+   community. Staggered: browsers throttle (or silently drop) a burst of saves
+   fired in the same tick, and Chrome wants the "download multiple files" grant. */
+async function pubqDownloadAll(){
+  if(state.pubqBusy || !state.pubq.length) return;
+  const jsPDF=(window.jspdf&&window.jspdf.jsPDF)||window.jsPDF;
+  if(!jsPDF){ uiAlert("PDF library didn't load — refresh and try again.","Download all"); return; }
+  state.pubqBusy=true; renderPubq();
+  const list=state.pubq.slice(), missing=[];
+  let ok=0;
+  for(let i=0;i<list.length;i++){
+    const e=list[i];
+    const btn=$("pubqDl"); if(btn) btn.textContent=`Downloading ${i+1}/${list.length}…`;
+    let saved=false;
+    try{ saved=exportCISpdf(e.id,{preferPublished:true, quiet:true}); }catch(err){ console.error(err); }
+    if(saved) ok++; else missing.push(e.name);
+    await new Promise(r=>setTimeout(r,400));
+  }
+  state.pubqBusy=false; renderPubq();
+  if(missing.length) uiAlert(`Downloaded ${ok} of ${list.length} PDFs. Skipped (no longer in the database): ${missing.join(", ")}.`,"Download all");
+}
+
+function renderPubq(){
+  const host=$("pubq"); if(!host) return;
+  const show = isEditor() && state.pubq.length>0;
+  host.classList.toggle("hidden", !show);
+  if(!show){ host.innerHTML=""; return; }
+  const n=state.pubq.length;
+  const stale=state.pubq.filter(pubqStale).length;
+  const STALE_TIP="Edited since this publish — the newer draft isn't published yet, so the PDF you'd download is the older live version.";
+  host.innerHTML=`
+    <div class="pubq-h">
+      <button class="pubq-toggle" id="pubqToggle" title="${state.pubqOpen?"Collapse":"Expand"}" aria-expanded="${state.pubqOpen?"true":"false"}">
+        <span class="pubq-caret">${state.pubqOpen?"&#9662;":"&#9656;"}</span>
+        <span class="pubq-title">Published</span><span class="pubq-count">${n}</span>
+        ${stale&&!state.pubqOpen?`<span class="pubq-stale hdr" title="${esc(STALE_TIP)}">${stale} newer</span>`:""}
+      </button>
+    </div>
+    <div class="pubq-acts">
+      <button class="btn mini solid" id="pubqDl" ${state.pubqBusy?"disabled":""}>${state.pubqBusy?"Downloading…":"&#8681; Download all"}</button>
+      <button class="btn mini ghost" id="pubqClear" ${state.pubqBusy?"disabled":""}>Clear</button>
+    </div>
+    ${state.pubqOpen?`<div class="pubq-list">${state.pubq.map(e=>{
+      const old=pubqStale(e);
+      const meta=[ e.jde?`<span class="pubq-jde">JDE ${esc(e.jde)}</span>`:"",
+                   old?`<span class="pubq-stale" title="${esc(STALE_TIP)}">Newer draft</span>`:"" ].filter(Boolean).join("");
+      return `<div class="pubq-row${old?" stale":""}" data-pubqid="${esc(e.id)}">
+        <button class="pubq-nm" data-pubqopen="${esc(e.id)}" title="Open ${esc(e.name)}">
+          <span class="pubq-nm-t">${esc(e.name)}</span>${meta?`<span class="pubq-meta">${meta}</span>`:""}</button>
+        <button class="rowdel pubq-x" data-pubqdel="${esc(e.id)}" ${state.pubqBusy?"disabled":""} title="Remove from list" aria-label="Remove ${esc(e.name)} from list">&times;</button>
+      </div>`; }).join("")}</div>`:""}`;
+  $("pubqToggle").onclick=pubqToggle;
+  $("pubqDl").onclick=pubqDownloadAll;
+  $("pubqClear").onclick=pubqClear;
+  host.querySelectorAll("[data-pubqdel]").forEach(b=>b.onclick=()=>pubqRemove(b.dataset.pubqdel));
+  host.querySelectorAll("[data-pubqopen]").forEach(b=>b.onclick=()=>{
+    const id=b.dataset.pubqopen;
+    if(!itemById(id)){ uiAlert("That community is no longer in the database.","Publish list"); return; }
+    if(state.view!=="browse"){ state.view="browse"; setTab(); showDash(); render(); }
+    openDetail(id);
+  });
+}
+
 /* ---------- What's New (publish change log) ----------
    At publish time the app diffs the draft against the live published version and
    writes one cdb_change_log row: a new CIS published, plans added/removed, or
@@ -1069,7 +1183,7 @@ async function ensureDraft(id){   // null = couldn't get one; callers must bail
     const { data, error }=await sb.rpc("cdb_start_draft",{p_community_id:id});
     if(error || (data && !data.ok)){
       uiAlert((error&&error.message)||(data&&data.error)||"Couldn't start a draft.","Couldn't start a draft"); return null; }
-    await loadAll();
+    await loadAll(); renderPubq();   // a fresh draft makes any queued row for it stale
     const fresh=itemById(id); return (fresh&&fresh.draft)||null;
   }
   return it.draft||null;
@@ -1085,7 +1199,9 @@ async function saveDraft(row){
   if(error){ console.error(error); uiAlert("Save failed: "+error.message,"Couldn't save"); }
 }
 function refreshItemMeta(id){ const it=itemById(id); const row=it.draft||it.pub; if(row){ it.name=row.name||""; it.jde=row.jde||""; it.hub=row.hub||""; }
-  const l=$("list"); if(l){ const r=l.querySelector(`.row[data-id="${id}"] .nm`); if(r) r.textContent=it.name||"(untitled)"; } }
+  const l=$("list"); if(l){ const r=l.querySelector(`.row[data-id="${id}"] .nm`); if(r) r.textContent=it.name||"(untitled)"; }
+  renderPubq();   // an edit may have just made a queued row stale (or renamed it)
+}
 async function newCommunity(){
   const name=await uiPrompt("Community name",{title:"New community",okText:"Create",placeholder:"e.g. Bronson's Ridge"});
   if(name==null||!name.trim()) return;
@@ -1217,6 +1333,7 @@ async function deleteCommunity(id){
   if(error||(data&&!data.ok)){ uiAlert("Delete failed: "+((error&&error.message)||(data&&data.error)),"Delete failed"); return; }
   const paths=(data&&data.paths)||[];
   if(paths.length){ try{ await sb.storage.from(CFG.IMAGE_BUCKET).remove(paths); }catch(e){} }
+  pubqRemove(id);   // a deleted community can't be exported — drop it from the publish list
   state.sel=null; await loadAll(); render();
 }
 async function publish(id){
@@ -1228,7 +1345,10 @@ async function publish(id){
   const { data,error } = await sb.rpc("cdb_publish",{p_community_id:id});
   if(error||(data&&!data.ok)){ uiAlert("Publish failed: "+((error&&error.message)||(data&&data.error)),"Publish failed"); return; }
   await logCISChange(id, nm, diff);
-  await loadAll(); render(); openDetail(id);
+  await loadAll();
+  const fresh=itemById(id);
+  pubqAdd(id, (fresh&&fresh.name)||nm, (fresh&&fresh.jde)||(it&&it.jde));
+  render(); openDetail(id);
 }
 
 /* ---------- images (downsampled upload) ---------- */
@@ -1509,14 +1629,16 @@ async function publishAllDrafts(logln){
   const ids=state.items.filter(it=>it.hasDraft).map(it=>it.id);
   if(!ids.length){ if(logln)logln("No drafts to publish.","warn"); return; }
   if(!(await uiConfirm(`Publish all ${ids.length} drafts? Each becomes the live version for viewers.`,{title:"Publish all drafts",okText:"Publish all"}))) return;
-  let ok=0;
+  let ok=0; const queued=[];
   for(const id of ids){
     const it=itemById(id);
     const diff=it?diffCIS(it.pub, it.draft):null;
     const nm=it?(((it.draft&&it.draft.name)||it.name)||""):"";
     const { data,error }=await sb.rpc("cdb_publish",{p_community_id:id});
-    if(!error&&data&&data.ok){ ok++; await logCISChange(id, nm, diff); }
+    if(!error&&data&&data.ok){ ok++; await logCISChange(id, nm, diff); queued.push({id,nm,jde:(it&&it.jde)||""}); }
   }
+  // oldest first so the panel ends up newest-at-top, same as single publishes
+  queued.reverse().forEach(q=>pubqAdd(q.id, q.nm, q.jde));
   if(logln) logln(`Published ${ok} of ${ids.length} drafts.`, ok===ids.length?"ok":"warn");
   await loadAll(); render();
 }
