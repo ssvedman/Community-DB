@@ -155,7 +155,41 @@ async function enterApp(email){
   if(isAdmin()) $("adminLink").classList.remove("hidden");
   wireChrome(); syncEditorTabs(); pubqLoad();
   await loadAll(); render(); refreshWhatsNewBadge();
+  applyDeepLink();
 }
+/* ---------------- DEEP LINK ----------------
+   Sibling apps link straight to a community with `#jde=<number>`. Same origin
+   and the same shared session, so the link lands inside the record rather than
+   on a sign-in screen.
+
+   The hash is cleared once it has been acted on: leaving it in place would
+   re-open the same community on every later refresh, which reads as the app
+   refusing to let go of a record the user has moved on from.
+
+   An unmatched or unpublished community falls back to putting the number in
+   the search box, so the link explains itself instead of doing nothing. */
+function applyDeepLink(){
+  const m=(location.hash||"").match(/[#&](?:jde|cis)=([^&]+)/);
+  if(!m) return false;
+  const key=decodeURIComponent(m[1]).trim();
+  history.replaceState(null,"",location.pathname+location.search);
+  if(!key) return false;
+  state.view="browse"; setTab(); showDash();
+  const want=lc(key);
+  const hit = state.items.find(it=>lc(it.jde)===want)
+           || state.items.find(it=>lc(it.name)===want);
+  if(!hit){ state.q=key; render(); return true; }
+  // a viewer can only see published, active records — relax the toggles rather
+  // than opening a detail pane the list doesn't contain
+  if(!making()){
+    if(!hit.hasPub){ state.q=key; render(); return true; }
+    if(!hit.active) state.showInactive=true;
+  }
+  state.sel=hit.id; render(); openDetail(hit.id);
+  return true;
+}
+// also honour a link pasted into a tab that is already open and signed in
+window.addEventListener("hashchange", ()=>{ if(state.email) applyDeepLink(); });
 // Gaps + Add/import live on the maker side only — hidden in Viewer mode.
 function syncEditorTabs(){ document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making())); }
 function wireChrome(){
