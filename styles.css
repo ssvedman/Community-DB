@@ -138,6 +138,12 @@ textarea.ed-in{min-height:90px;resize:vertical}
 .ed-calbtn:hover{color:var(--blue-600)}
 .ed-calhidden{position:absolute;right:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none}
 .rowdel{background:none;border:0;color:var(--red);cursor:pointer;font-size:16px;line-height:1}
+/* the row X column (plan rows, spec lines, model rows) — narrow, and quiet
+   until the row is hovered so it doesn't compete with the values */
+td.rowx{width:34px;padding:4px 8px 4px 4px;text-align:center}
+td.rowx .rowdel{opacity:.32;border-radius:5px;padding:1px 4px;transition:opacity .12s,background .12s}
+tr:hover td.rowx .rowdel{opacity:1}
+td.rowx .rowdel:hover,td.rowx .rowdel:focus-visible{opacity:1;background:var(--editbg)}
 
 /* images */
 .imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;padding:12px 14px}
@@ -231,7 +237,7 @@ textarea.ed-in{min-height:90px;resize:vertical}
   .site-foot{padding:14px 12px}
 }
 
-@media print{.topbar .linkbtn,.mode-toggle,.tabs,.bar,.drop,.sec button,.rowdel,.mob-back,.site-foot{display:none!important}
+@media print{.topbar .linkbtn,.mode-toggle,.tabs,.bar,.drop,.sec button,.rowdel,td.rowx,.mob-back,.site-foot{display:none!important}
   .split{grid-template-columns:1fr}.list{display:none}.split #detail{display:block!important}}
 
 /* ---------- What's New (publish change log) ---------- */

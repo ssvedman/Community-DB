@@ -491,6 +491,19 @@ function fval(d,k){ const v=(d.f||{})[k]; return (v==null||v==="")?"":String(v);
 function evCell(id,path,v,shared){ // editable value span; shared=1 asks "all enclaves or just this one" on commit
   return `<span class="ev" data-ev="${esc(path)}" data-id="${id}"${shared?' data-shared="1"':""}>${v?esc(v):'<span class="none">—</span>'}</span>`;
 }
+/* A spec line can be removed when it has something in it, isn't the auto-stamped
+   Revision Date, and isn't the Community Name — that one names the record in the
+   list, so it stays renameable but not removable. */
+function kvRemovable(f, v){ return !!v && !f.readonly && f.k!==SCHEMA.IDENTITY.name; }
+/* The maker's row X — the same control on plan rows, spec lines and model rows.
+   `on` is false for a row there's nothing to remove from: the cell still renders
+   so the column stays aligned, just without a button. */
+function rowXCell(editing, on, attrs, label, shared){
+  if(!editing) return "";
+  if(!on) return `<td class="rowx"></td>`;
+  const l=String(label==null?"this line":label);
+  return `<td class="rowx"><button class="rowdel" ${attrs} data-rowlabel="${esc(l)}"${shared?' data-shared="1"':""} title="Remove this line" aria-label="Remove ${esc(l)}">&times;</button></td>`;
+}
 /* One section's header button + body, so the single view and the cluster view
    (which puts an enclave dropdown in the header) share the exact same bodies.
    Returns {btn, body}; body==="" means the section is hidden for this record. */
@@ -499,9 +512,11 @@ function sectionParts(sec, d, editing, id){
     let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly)) return "";
       const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v)
                  : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>` : esc(v));
-      return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td></tr>`; }).join("");
+      return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td>${
+        rowXCell(editing, kvRemovable(f,v), `data-kvdel="f.${esc(f.k)}"`, f.label)}</tr>`; }).join("");
     const ex=(d.extra&&d.extra[sec.id])||[];
-    ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td></tr>`; });
+    ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td>${
+      rowXCell(editing, true, `data-xdel="${esc(sec.id)}.${xi}"`, pair[0]||"this line")}</tr>`; });
     return { btn:"", body: rows?`<table>${rows}</table>`:(editing?`<table></table>`:"") };
   }
   if(sec.kind==="plans"){
@@ -512,7 +527,8 @@ function sectionParts(sec, d, editing, id){
       if(ci===1){ // Plan Name / footprint: truncated label, click opens a popup (view or edit)
         return `<td class="v"><span class="plname" data-planopen="${ri}" data-full="${esc(v)}">${v?esc(v):'<span class="none">—</span>'}</span></td>`; }
       return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
-    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${editing?`<td><button class="rowdel" data-pldel="${ri}">×</button></td>`:""}</tr>`).join("");
+    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${
+      rowXCell(editing, true, `data-pldel="${ri}"`, _planRowLabel(r)||"this row")}</tr>`).join("");
     return { btn: editing?`<button data-pladd="1">Add row</button>`:"",
              body: `<div class="tscroll"><table class="plans-t">${head}${body}</table></div>` };
   }
@@ -533,9 +549,10 @@ function sectionParts(sec, d, editing, id){
       if(!blankShown){ blankShown=true; return true; }
       return false; });
     const hiddenN=editing?visible.filter(v=>!v).length:0;
-    let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}</tr>`;
+    let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
     let body=sec.rowLabels.map((lbl,ri)=>{ if(!visible[ri]) return ""; const row=arr[ri]||[];
-      return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}</tr>`; }).join("");
+      return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
+        rowXCell(editing, rowHas(ri), `data-mdel="${esc(sec.key)}.${ri}"`, lbl)}</tr>`; }).join("");
     return { btn: editing?`<button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"",
              body: `<div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>` };
   }
@@ -592,11 +609,13 @@ function kvClusterBody(sec, cx, ai, editing){
                : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>`
                              : (esc(v)||(showDash?'<span class="none">—</span>':"")));
     if(!disp) return "";
-    return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp}${fd?encTag(lbl):""}</td></tr>`; }).join("");
+    return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp}${fd?encTag(lbl):""}</td>${
+      rowXCell(editing, kvRemovable(f,v), `data-kvdel="f.${esc(f.k)}"`, f.label, !fd)}</tr>`; }).join("");
   const exDiff=!!cx.extraDiff[sec.id];
   const ex=(d.extra&&d.extra[sec.id])||[];
   ex.forEach((pair,xi)=>{ const v=pair[1]||"";
-    rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v,!exDiff):esc(v)}${exDiff?encTag(lbl):""}</td></tr>`; });
+    rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v,!exDiff):esc(v)}${exDiff?encTag(lbl):""}</td>${
+      rowXCell(editing, true, `data-xdel="${esc(sec.id)}.${xi}"`, pair[0]||"this line", !exDiff)}</tr>`; });
   return rows?`<table>${rows}</table>`:(editing?`<table></table>`:"");
 }
 /* read-only side-by-side of just the values that differ inside one section */
@@ -657,6 +676,11 @@ function wireEditables(id){
   $("detail").querySelectorAll(".ev").forEach(sp=>sp.onclick=()=>beginEdit(sp,id));
   const add=$("detail").querySelector("[data-pladd]"); if(add) add.onclick=()=>plAdd(id);
   $("detail").querySelectorAll("[data-pldel]").forEach(b=>b.onclick=()=>plDel(id,+b.dataset.pldel));
+  $("detail").querySelectorAll("[data-kvdel]").forEach(b=>b.onclick=()=>kvDel(id,b.dataset.kvdel,b.dataset.shared==="1",b.dataset.rowlabel));
+  $("detail").querySelectorAll("[data-xdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.xdel.split(".");
+    xDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
+  $("detail").querySelectorAll("[data-mdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mdel.split(".");
+    gridDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
   $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
     state.gridShowAll=state.gridShowAll||{}; state.gridShowAll[b.dataset.gridall]=!state.gridShowAll[b.dataset.gridall]; openDetail(id); });
 }
@@ -740,6 +764,55 @@ async function setPath(id,path,value){
 }
 async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); if(!row) return; const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
+
+/* ---------- removing a line (maker) ---------- */
+/* The row X, for the rows that aren't free-form plan rows:
+   - a schema line always exists in the field list, so removing it means clearing
+     its value — the line then drops off the viewer's sheet and every export, and
+     the label stays in maker mode so it can be refilled later;
+   - an imported custom line is spliced out of data.extra for good;
+   - a model / grid row is blanked back to an empty row (its label is fixed, and
+     blank rows are hidden the same way they always were).
+   All three go through the draft, so Discard draft still undoes them. */
+/* Which records the removal applies to. A value that's identical across a
+   cluster's enclaves asks all-or-one, exactly like editing it does. */
+async function delScope(id, shared, what){
+  if(!shared) return [id];
+  const grp=clusterFor(id);
+  if(!grp || grp.items.length<2) return [id];
+  const c=await openModal({ title:"Shared value",
+    body:`<p><b>${esc(what||"This line")}</b> is the same in every enclave of <b>${esc(grp.name)}</b>. Remove it from:</p>`,
+    buttons:[{label:"Cancel",value:"x"},
+             {label:`Only ${encLabel(grp,itemById(id))}`,value:"one"},
+             {label:`All ${grp.items.length} enclaves`,value:"all",primary:true}] });
+  if(c==null||c==="x") return null;
+  return c==="all" ? grp.items.map(x=>x.id) : [id];
+}
+async function kvDel(id, path, shared, label){
+  const ids=await delScope(id, shared, label); if(!ids) return;
+  for(const x of ids) await setPath(x, path, "");
+  openDetail(id);
+}
+async function xDel(id, secId, xi, shared, label){
+  const ids=await delScope(id, shared, label); if(!ids) return;
+  for(const x of ids){
+    const row=await ensureDraft(x); if(!row) continue;
+    const arr=((row.data=row.data||{}).extra||{})[secId];
+    if(Array.isArray(arr)) arr.splice(xi,1);
+    await saveDraft(row); refreshItemMeta(x);
+  }
+  openDetail(id);
+}
+async function gridDel(id, key, ri, shared, label){
+  const ids=await delScope(id, shared, label); if(!ids) return;
+  for(const x of ids){
+    const row=await ensureDraft(x); if(!row) continue;
+    const arr=(row.data=row.data||{})[key];
+    if(Array.isArray(arr) && Array.isArray(arr[ri])) arr[ri]=arr[ri].map(()=>"");
+    await saveDraft(row); refreshItemMeta(x);
+  }
+  openDetail(id);
+}
 
 /* ---------- export a CIS to a themed .xlsx (matches the PDF styling) ---------- */
 function exportCIS(id){
