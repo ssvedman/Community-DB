@@ -566,7 +566,7 @@ function sectionParts(sec, d, editing, id){
       if(!editing && !rowHas(ri) && String(lbl||"").trim()==="") return "";
       const labelCell=editing?evCell(id,`ml.${j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
       return `<tr><td class="k">${labelCell}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
-        rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${j}"`, lbl||"this row")}</tr>`; }).join("");
+        rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${j}"`, lbl||"this row", true)}</tr>`; }).join("");
     const addBtn=editing?`<button data-gridadd="${esc(sec.key)}">Add row</button>`:"";
     const moreBtn=(editing && (hiddenN||showAll))?` <button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"";
     return { btn: addBtn+moreBtn,
@@ -706,7 +706,7 @@ function wireEditables(id){
   $("detail").querySelectorAll("[data-mdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mdel.split(".");
     gridDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
   $("detail").querySelectorAll("[data-gridadd]").forEach(b=>b.onclick=()=>gridAdd(id,b.dataset.gridadd));
-  $("detail").querySelectorAll("[data-mrowdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mrowdel.split("."); gridRowDel(id,p[0],+p[1]); });
+  $("detail").querySelectorAll("[data-mrowdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mrowdel.split("."); gridRowDel(id,p[0],+p[1],b.dataset.rowlabel,b.dataset.shared==="1"); });
   $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
     state.gridShowAll=state.gridShowAll||{}; state.gridShowAll[b.dataset.gridall]=!state.gridShowAll[b.dataset.gridall]; openDetail(id); });
 }
@@ -806,13 +806,24 @@ async function gridAdd(id, key){
   await saveDraft(row); openDetail(id);
 }
 /* Fully remove a custom grid row (label + cells). j is the index within the custom
-   rows; its cell array sits at preset-count + j. */
-async function gridRowDel(id, key, j){
-  const row=await ensureDraft(id); if(!row) return; const d=row.data||{};
+   rows of the shown record; its cell array sits at preset-count + j. In a cluster
+   this asks "only this enclave / all N" like every other removal, and when applied
+   to all it removes the row with the SAME LABEL from each enclave (custom rows sit
+   at different indices per enclave, so they're matched by label, not position). */
+async function gridRowDel(id, key, j, label, shared){
+  const ids = shared ? await delScope(id, shared, label) : [id];
+  if(!ids) return;
   const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.rowLabels.length:0;
-  if(Array.isArray(d[key])) d[key].splice(P+j,1);
-  if(Array.isArray(d.model_labels)) d.model_labels.splice(j,1);
-  await saveDraft(row); refreshItemMeta(id); openDetail(id);
+  for(const x of ids){
+    const row=await ensureDraft(x); if(!row) continue; const d=row.data||{};
+    const labels=Array.isArray(d.model_labels)?d.model_labels:[];
+    const jj = (x===id) ? j : labels.findIndex(l=>String(l||"").toLowerCase()===String(label||"").toLowerCase());
+    if(jj<0 || jj>=labels.length) continue;
+    if(Array.isArray(d[key])) d[key].splice(P+jj,1);
+    labels.splice(jj,1);
+    await saveDraft(row); refreshItemMeta(x);
+  }
+  openDetail(id);
 }
 
 /* ---------- removing a line (maker) ---------- */
