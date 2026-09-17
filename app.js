@@ -549,14 +549,12 @@ function sectionParts(sec, d, editing, id){
     // In maker mode the default is the filled preset rows plus ONE blank entry row;
     // "Show all rows" reveals the rest of the preset labels when they're needed.
     // User-added (custom) rows are always shown in maker mode and are fully removable.
+    // A preset row shows when it has data, or when "Show all rows" is on (so empty
+    // presets can be filled on demand). There is NO forced blank entry row — an
+    // empty preset is not shown by default, so it can't sit there as an
+    // unremovable stale line. New rows are added with the "Add row" button.
     const showAll = editing && state.gridShowAll && state.gridShowAll[sec.key];
-    let blankShown=false;
-    const visible=sec.rowLabels.map((lbl,ri)=>{
-      if(rowHas(ri)) return true;
-      if(!editing) return false;
-      if(showAll) return true;
-      if(!blankShown){ blankShown=true; return true; }
-      return false; });
+    const visible=sec.rowLabels.map((lbl,ri)=> rowHas(ri) || (editing && showAll));
     const hiddenN=editing?visible.filter(v=>!v).length:0;
     let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
     // preset rows: fixed label; the X clears the row (label is kept so it can be refilled)
@@ -660,9 +658,16 @@ function compareBody(sec, cx){
       const arr=Array.isArray(d.plans)?d.plans:[];
       return `<td class="v">${arr.map(r=>`<span class="enc-chip">${esc([r[0],(r[1]||"").split("(")[0].trim()].filter(Boolean).join(" "))}</span>`).join("")||'<span class="none">—</span>'}</td>`; }).join("")}</tr>`;
   } else if(sec.kind==="grid"){
-    const labs=cx.datas.reduce((a,d)=>{ const g=gridLabels(sec,d); return g.length>a.length?g:a; }, sec.rowLabels);
-    labs.forEach((lbl,ri)=>{
-      const vals=cx.datas.map(d=>((Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[]).filter(x=>S(x)).join(" · "));
+    // Pair rows by LABEL, not by position — custom rows differ per enclave, so a
+    // shared index would show one enclave's row under another's label. Build a
+    // per-enclave label->cells map and a union of labels (presets first).
+    const maps=cx.datas.map(d=>{ const g=gridLabels(sec,d); const arr=Array.isArray(d[sec.key])?d[sec.key]:[]; const m=new Map();
+      g.forEach((lbl,i)=>{ if(String(lbl||"").trim()!=="") m.set(lbl.toLowerCase(), {lbl, cells:arr[i]||[]}); }); return m; });
+    const order=[]; const seen=new Set();
+    sec.rowLabels.forEach(l=>{ const k=l.toLowerCase(); if(!seen.has(k)){ seen.add(k); order.push({k, lbl:l}); } });
+    maps.forEach(m=>m.forEach((v,k)=>{ if(!seen.has(k)){ seen.add(k); order.push({k, lbl:v.lbl}); } }));
+    order.forEach(({k,lbl})=>{
+      const vals=maps.map(m=>{ const e=m.get(k); return e?e.cells.filter(x=>S(x)).join(" · "):""; });
       if(vals.every(v=>!v) || vals.every(v=>v===vals[0])) return;
       rows+=`<tr><td class="k">${esc(lbl)}</td>${tds(vals)}</tr>`; });
   } else if(sec.kind==="note"){
@@ -1235,7 +1240,7 @@ function diffCIS(pub, draft){
       });
       oldBy.forEach((r,k)=>{ if(!newBy.has(k)) out.plansRemoved.push(_planRowLabel(r)); });
     } else if(sec.kind==="grid"){
-      if(JSON.stringify(dOld[sec.key]||[])!==JSON.stringify(dNew[sec.key]||[]))
+      if(JSON.stringify([dOld[sec.key]||[], dOld.model_labels||[]])!==JSON.stringify([dNew[sec.key]||[], dNew.model_labels||[]]))
         out.fields.push({sec:sec.title,label:"Table updated",from:"",to:""});
     } else if(sec.kind==="note"){
       if(String(dOld.note||"")!==String(dNew.note||""))
@@ -1729,8 +1734,16 @@ function parseSheet(aoa){
     }
     if(cur==="model"){
       if(/^model$/i.test(a)) continue;                   // column-header row
+      const cells=[b, (rrow[2]==null?"":String(rrow[2]).trim()), (rrow[3]==null?"":String(rrow[3]).trim()), (rrow[4]==null?"":String(rrow[4]).trim())];
       const gi=gridLabels.findIndex(l=>l.toLowerCase()===a.toLowerCase());
-      if(gi>=0) data.model[gi]=[b, (rrow[2]==null?"":String(rrow[2]).trim()), (rrow[3]==null?"":String(rrow[3]).trim()), (rrow[4]==null?"":String(rrow[4]).trim())];
+      if(gi>=0){ data.model[gi]=cells; }
+      else if(a){                                        // custom (user-added) row — preserve it on re-import
+        const P=gridLabels.length;
+        data.model_labels=data.model_labels||[];
+        while(data.model.length<P) data.model.push([]);
+        data.model.push(cells);
+        data.model_labels.push(a);
+      }
       continue;
     }
     if(cur==="note"){ if(a) noteLines.push(a); continue; }

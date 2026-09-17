@@ -1,3 +1,8 @@
+-- !! SECURITY: cdb_admin_add_or_reset below is the UNGUARDED base definition.
+-- !! After running this file you MUST run harden_admin_no_peer_reset.sql, which
+-- !! re-defines it (and the delete/reset issuers) so an admin cannot reset or
+-- !! delete ANOTHER admin. Re-running this file alone silently reopens that hole.
+
 /* ==========================================================================
    Community-DB — Supabase backend (schema + RLS + publish workflow + storage)
    Shares the existing Supabase project with Takeoff Flow and the Vendor Portal.
