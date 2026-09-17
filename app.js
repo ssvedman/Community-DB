@@ -495,6 +495,11 @@ function evCell(id,path,v,shared){ // editable value span; shared=1 asks "all en
    Revision Date, and isn't the Community Name — that one names the record in the
    list, so it stays renameable but not removable. */
 function kvRemovable(f, v){ return !!v && !f.readonly && f.k!==SCHEMA.IDENTITY.name; }
+/* A grid record's full label list = the section's fixed preset labels followed by
+   any user-added (custom) row labels stored on the record in d.model_labels. Cell
+   arrays live in d[sec.key] at the SAME index as the label, so callers can iterate
+   this list and read d[sec.key][i] for both preset and custom rows. */
+function gridLabels(sec, d){ return sec.rowLabels.concat(Array.isArray(d&&d.model_labels)?d.model_labels:[]); }
 /* The maker's row X — the same control on plan rows, spec lines and model rows.
    `on` is false for a row there's nothing to remove from: the cell still renders
    so the column stays aligned, just without a button. */
@@ -534,12 +539,16 @@ function sectionParts(sec, d, editing, id){
   }
   if(sec.kind==="grid"){
     const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
+    const P=sec.rowLabels.length;                                  // fixed preset rows occupy indices 0..P-1
+    const custom=Array.isArray(d.model_labels)?d.model_labels:[];  // user-added rows occupy indices P..P+n-1
     const rowHas=ri=>{ const r=arr[ri]||[]; return Array.isArray(r)&&r.some(x=>x!=null&&String(x).trim()!==""); };
-    const anyVal=sec.rowLabels.some((_,ri)=>rowHas(ri));
-    if(!anyVal && !editing) return { btn:"", body:"" };
-    // Blank rows never show on the published/viewer side (same as the kv lines).
-    // In maker mode the default is the filled rows plus ONE blank entry row;
-    // "Show all rows" reveals the rest of the labels when they're needed.
+    const anyPreset=sec.rowLabels.some((_,ri)=>rowHas(ri));
+    const anyCustom=custom.some((lbl,j)=>rowHas(P+j) || String(lbl||"").trim()!=="");
+    if(!anyPreset && !anyCustom && !editing) return { btn:"", body:"" };
+    // Blank preset rows never show on the published/viewer side (same as the kv lines).
+    // In maker mode the default is the filled preset rows plus ONE blank entry row;
+    // "Show all rows" reveals the rest of the preset labels when they're needed.
+    // User-added (custom) rows are always shown in maker mode and are fully removable.
     const showAll = editing && state.gridShowAll && state.gridShowAll[sec.key];
     let blankShown=false;
     const visible=sec.rowLabels.map((lbl,ri)=>{
@@ -550,10 +559,19 @@ function sectionParts(sec, d, editing, id){
       return false; });
     const hiddenN=editing?visible.filter(v=>!v).length:0;
     let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+    // preset rows: fixed label; the X clears the row (label is kept so it can be refilled)
     let body=sec.rowLabels.map((lbl,ri)=>{ if(!visible[ri]) return ""; const row=arr[ri]||[];
       return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
         rowXCell(editing, rowHas(ri), `data-mdel="${esc(sec.key)}.${ri}"`, lbl)}</tr>`; }).join("");
-    return { btn: editing?`<button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"",
+    // custom rows: editable label + the X fully removes the row (like the Plans table)
+    body+=custom.map((lbl,j)=>{ const ri=P+j; const row=arr[ri]||[];
+      if(!editing && !rowHas(ri) && String(lbl||"").trim()==="") return "";
+      const labelCell=editing?evCell(id,`ml.${j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
+      return `<tr><td class="k">${labelCell}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
+        rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${j}"`, lbl||"this row")}</tr>`; }).join("");
+    const addBtn=editing?`<button data-gridadd="${esc(sec.key)}">Add row</button>`:"";
+    const moreBtn=(editing && (hiddenN||showAll))?` <button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"";
+    return { btn: addBtn+moreBtn,
              body: `<div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>` };
   }
   if(sec.kind==="note"){
@@ -587,7 +605,7 @@ function clusterContext(grp){
       if(cx.extraDiff[sec.id]) dif=true;
       cx.diff[sec.id]=dif;
     } else if(sec.kind==="plans"){ const js=datas.map(d=>JSON.stringify(d.plans||[])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
-    else if(sec.kind==="grid"){ const js=datas.map(d=>JSON.stringify(d[sec.key]||[])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
+    else if(sec.kind==="grid"){ const js=datas.map(d=>JSON.stringify([d[sec.key]||[], d.model_labels||[]])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
     else if(sec.kind==="note"){ cx.diff[sec.id]=!same(datas.map(d=>d.note||"")); }
   });
   return cx;
@@ -642,7 +660,8 @@ function compareBody(sec, cx){
       const arr=Array.isArray(d.plans)?d.plans:[];
       return `<td class="v">${arr.map(r=>`<span class="enc-chip">${esc([r[0],(r[1]||"").split("(")[0].trim()].filter(Boolean).join(" "))}</span>`).join("")||'<span class="none">—</span>'}</td>`; }).join("")}</tr>`;
   } else if(sec.kind==="grid"){
-    sec.rowLabels.forEach((lbl,ri)=>{
+    const labs=cx.datas.reduce((a,d)=>{ const g=gridLabels(sec,d); return g.length>a.length?g:a; }, sec.rowLabels);
+    labs.forEach((lbl,ri)=>{
       const vals=cx.datas.map(d=>((Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[]).filter(x=>S(x)).join(" · "));
       if(vals.every(v=>!v) || vals.every(v=>v===vals[0])) return;
       rows+=`<tr><td class="k">${esc(lbl)}</td>${tds(vals)}</tr>`; });
@@ -681,6 +700,8 @@ function wireEditables(id){
     xDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
   $("detail").querySelectorAll("[data-mdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mdel.split(".");
     gridDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
+  $("detail").querySelectorAll("[data-gridadd]").forEach(b=>b.onclick=()=>gridAdd(id,b.dataset.gridadd));
+  $("detail").querySelectorAll("[data-mrowdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mrowdel.split("."); gridRowDel(id,p[0],+p[1]); });
   $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
     state.gridShowAll=state.gridShowAll||{}; state.gridShowAll[b.dataset.gridall]=!state.gridShowAll[b.dataset.gridall]; openDetail(id); });
 }
@@ -745,6 +766,7 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
   if(kind==="note") return d.note||"";
   if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
   if(kind==="m"){ const r=(d.model||[])[+p[1]]||[]; return r[+p[2]]; }
+  if(kind==="ml"){ return (d.model_labels||[])[+p[1]]; }
   if(kind==="x"){ const arr=(d.extra||{})[p[1]]||[]; const pair=arr[+p[2]]||[]; return pair[1]; }
   return "";
 }
@@ -759,11 +781,34 @@ async function setPath(id,path,value){
   else if(kind==="note") d.note=value;
   else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||["","","","",""]; r[+p[2]]=value; }
   else if(kind==="m"){ d.model=d.model||[]; const r=d.model[+p[1]]=d.model[+p[1]]||["","","",""]; r[+p[2]]=value; }
+  else if(kind==="ml"){ d.model_labels=d.model_labels||[]; d.model_labels[+p[1]]=value; }
   else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
 async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); if(!row) return; const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
+/* Add a custom row to a grid (Model) section: a blank editable label + blank cells,
+   appended after the fixed preset rows. Preset slots are padded so cell indices
+   stay aligned with gridLabels(). */
+async function gridAdd(id, key){
+  const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{};
+  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.rowLabels.length:0;
+  d[key]=Array.isArray(d[key])?d[key]:[];
+  while(d[key].length<P) d[key].push([]);
+  d[key].push((sec?sec.columns:[0,0,0,0]).map(()=>""));
+  d.model_labels=Array.isArray(d.model_labels)?d.model_labels:[];
+  d.model_labels.push("");
+  await saveDraft(row); openDetail(id);
+}
+/* Fully remove a custom grid row (label + cells). j is the index within the custom
+   rows; its cell array sits at preset-count + j. */
+async function gridRowDel(id, key, j){
+  const row=await ensureDraft(id); if(!row) return; const d=row.data||{};
+  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.rowLabels.length:0;
+  if(Array.isArray(d[key])) d[key].splice(P+j,1);
+  if(Array.isArray(d.model_labels)) d.model_labels.splice(j,1);
+  await saveDraft(row); refreshItemMeta(id); openDetail(id);
+}
 
 /* ---------- removing a line (maker) ---------- */
 /* The row X, for the rows that aren't free-form plan rows:
@@ -850,7 +895,7 @@ function exportCIS(id){
       const arr=d[sec.key]||[]; if(!arr.some(r=>Array.isArray(r)&&r.some(x=>x))) return;
       fullRow(sec.title, stSection);
       put(R,0,sec.rowHeader||"",stPHdr); sec.columns.forEach((c,ci)=>put(R,ci+1,c,stPHdr)); R++;
-      sec.rowLabels.forEach((lbl,ri)=>{ const row=arr[ri]||[]; if(!(Array.isArray(row)&&row.some(x=>x!=null&&String(x).trim()!==""))) return;   // blank rows don't print
+      gridLabels(sec,d).forEach((lbl,ri)=>{ const row=arr[ri]||[]; if(!(Array.isArray(row)&&row.some(x=>x!=null&&String(x).trim()!==""))) return;   // blank rows don't print
         put(R,0,lbl,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,row[ci]||"",stPCell)); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
@@ -906,7 +951,7 @@ function exportCISpdf(id, opts){
     } else if(sec.kind==="grid"){
       const arr=d[sec.key]||[];
       if(arr.some(r=>Array.isArray(r)&&r.some(x=>x))){
-        const body=sec.rowLabels.map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; })
+        const body=gridLabels(sec,d).map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; })
           .filter(row=>row.slice(1).some(x=>String(x==null?"":x).trim()!==""));   // blank rows don't print
         sectionTable(sec.title, body, { cols:5, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
           {content:sec.title,colSpan:5,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
@@ -949,9 +994,9 @@ function clusterExportModel(grp){
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:d.plans||[]}))).filter(t=>t.rows.length);
       if(tabs.length) secs.push({kind:"plans", title:sec.title, tabs});
     } else if(sec.kind==="grid"){
-      const rowsOf=d=>sec.rowLabels.map((lbl,ri)=>{ const r=(Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[];
+      const rowsOf=d=>gridLabels(sec,d).map((lbl,ri)=>{ const r=(Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[];
         return [lbl, ...sec.columns.map((c,ci)=>S(r[ci]))]; }).filter(r=>r.slice(1).some(x=>x));
-      const js=cx.datas.map(d=>JSON.stringify(d[sec.key]||[]));
+      const js=cx.datas.map(d=>JSON.stringify([d[sec.key]||[], d.model_labels||[]]));
       const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
       if(tabs.length) secs.push({kind:"grid", title:sec.title, sec, tabs});
