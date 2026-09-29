@@ -30,6 +30,11 @@ Two sides, one app:
 - **Edit** on a published community clones it into a draft; **Discard draft** reverts to live.
 - Each publish writes an immutable snapshot to `cdb_cis_revisions` (audit trail).
 
+## Enclaves
+
+In a community with several enclaves, **More → Set inactive / Set active** asks whether to apply it to
+just the selected enclave or to every enclave in the community.
+
 ## Images
 
 Uploads are downsampled in the browser (longest edge `IMAGE_MAX_EDGE`, re-encoded JPEG at
@@ -61,6 +66,8 @@ layout in `config.js` is used.
   table rows between tables (a moved table row remembers where its cells are stored). A row with
   values can't move between a spec section and a table; if the destination lacks one of the row's
   filled columns the editor warns first.
+- **+ Notes** adds a notes row at the bottom of a section: one full-width text box (multi-line) that spans
+  every column, on sheets and in the Excel / PDF exports.
 - A row added through the template shows on every existing sheet in Maker mode as an empty cell to
   fill in (viewers only see it once it has a value).
 - Every save writes a snapshot to `cdb_template_revisions`. Saving over someone else's newer save asks first.

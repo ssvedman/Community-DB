@@ -427,3 +427,8 @@ tr.tg-dragging>td{opacity:.3}
 .tg-dropline.warn::before{background:#d18b00}
 .tg-ghost.warn{border-color:#d18b00}
 .tg-ghost.warn .tg-ghost-msg{color:#9a6a00}
+/* notes rows: one full-width text box */
+.tg-notecell{background:var(--card)!important;padding:6px 10px!important;color:var(--mute);font-size:12px;font-style:italic}
+.tg-notecell span{display:block;border:1px dashed var(--line);border-radius:5px;padding:6px 8px;min-height:32px}
+tr.note-row td.v{white-space:pre-wrap}
+.ev.ev-long{display:block;min-height:1.6em}

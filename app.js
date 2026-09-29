@@ -97,9 +97,10 @@ function kvText(cells, cols){ return cols.map(c=>String(cells[c.pos]==null?"":ce
 /* raw cell arrays of a table section for one record (plans rows, grid rows, or label/value rows) */
 function tableRows(sec, d){
   d=d||{};
-  if(sec.kind==="kv") return (sec.fields||[]).map(f=>kvCells(d,f)).concat(((d.extra||{})[sec.id]||[]).map(kvExCells));
+  // "notes" rows are one full-width text box (value in slot 0) — they don't belong to any column
+  if(sec.kind==="kv") return (sec.fields||[]).filter(f=>!f.note).map(f=>kvCells(d,f)).concat(((d.extra||{})[sec.id]||[]).map(kvExCells));
   if(sec.kind==="plans") return Array.isArray(d.plans)?d.plans.filter(Array.isArray):[];
-  if(sec.kind==="grid") return gridAll(sec,d).map(r=>r.cells);
+  if(sec.kind==="grid") return gridAll(sec,d).filter(r=>!r.note).map(r=>r.cells);
   return [];
 }
 const planSec = () => SCHEMA.SECTIONS.find(s=>s.kind==="plans") || {columns:normCols(SCHEMA.PLAN_COLS), colNext:SCHEMA.PLAN_COLS.length};
@@ -585,8 +586,8 @@ function openDetail(id){
 
 /* ---------- section renderers (data model: data.f / data.plans / data.note / data.extra) ---------- */
 function fval(d,k){ const v=(d.f||{})[k]; return (v==null||v==="")?"":String(v); }
-function evCell(id,path,v,shared){ // editable value span; shared=1 asks "all enclaves or just this one" on commit
-  return `<span class="ev" data-ev="${esc(path)}" data-id="${id}"${shared?' data-shared="1"':""}>${v?esc(v):'<span class="none">—</span>'}</span>`;
+function evCell(id,path,v,shared,long){ // editable value span; shared=1 asks "all enclaves or just this one" on commit; long = multi-line
+  return `<span class="ev${long?" ev-long":""}" data-ev="${esc(path)}" data-id="${id}"${shared?' data-shared="1"':""}${long?' data-long="1"':""}>${v?esc(v):'<span class="none">—</span>'}</span>`;
 }
 /* A spec line can be removed when it has something in it, isn't the auto-stamped
    Revision Date, and isn't the Community Name — that one names the record in the
@@ -609,7 +610,7 @@ function gridAll(sec, d){
     const A = dk===sec.key ? arr : (Array.isArray(d[dk])?d[dk]:[]);
     const G = dk===sec.key ? gx : (((d.gridx||{})[dk])||{});
     if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:A[r.pos]||[], retired:!!r.retired, dk, path:`g.${dk}.${r.pos}`, clr:`m:${r.pos}`});
-    else if(r.k) out.push({type:"tpl", label:r.label, cells:G[r.k]||[], retired:!!r.retired, dk, path:`mx.${dk}.${r.k}`, clr:`x:${r.k}`});
+    else if(r.k) out.push({type:"tpl", label:r.label, cells:G[r.k]||[], retired:!!r.retired, note:!!r.note, dk, path:`mx.${dk}.${r.k}`, clr:`x:${r.k}`});
   });
   const P=sec.presetBase||0;
   customLabels(sec,d).forEach((lbl,j)=>
@@ -619,7 +620,7 @@ function gridAll(sec, d){
 /* does this record hold anything in this section? (drives retired-section visibility) */
 function secHasData(sec, d){
   d=d||{};
-  if(sec.kind==="kv") return tableRows(sec,d).some(hasCells);
+  if(sec.kind==="kv") return tableRows(sec,d).some(hasCells) || (sec.fields||[]).some(f=>f.note && fval(d,f.k));
   if(sec.kind==="plans") return Array.isArray(d.plans) && d.plans.length>0;
   if(sec.kind==="grid") return gridAll(sec,d).some(r=>hasCells(r.cells) || (r.type==="custom" && String(r.label||"").trim()));
   if(sec.kind==="note") return String(d.note==null?"":d.note).trim()!=="";
@@ -671,6 +672,10 @@ function sectionParts(sec, d, editing, id){
     const cells=r=>cols.map(c=>`<td class="v">${editing?evCell(id,`${r.path}.${c.pos}`,r.cells[c.pos]||""):esc(r.cells[c.pos]||"")}</td>`).join("");
     // template rows: fixed label; the X clears the row (label is kept so it can be refilled)
     let body=tplRows.map(r=>{ if(!vis(r)) return "";
+      if(r.note){ const v=String(r.cells[0]==null?"":r.cells[0]);   // notes row: one text box across the row
+        return `<tr class="note-row"><td class="k">${esc(r.label)}</td><td class="v" colspan="${cols.length}">${
+          editing?evCell(id,`${r.path}.0`,v,false,true):(esc(v)||'<span class="none">—</span>')}</td>${
+          rowXCell(editing, hasCells(r.cells), `data-mdel="${esc(r.dk)}|${esc(r.clr)}"`, r.label)}</tr>`; }
       return `<tr><td class="k">${esc(r.label)}</td>${cells(r)}${
         rowXCell(editing, hasCells(r.cells), `data-mdel="${esc(r.dk)}|${esc(r.clr)}"`, r.label)}</tr>`; }).join("");
     // custom rows: editable label + the X fully removes the row (like the Plans table)
@@ -741,6 +746,12 @@ function kvBody(sec, d, id, editing, cx){
     const cells=kvCells(d,f); const has=hasCells(cells); const fd=cx?!!cx.fieldDiff[f.k]:false;
     if(!has && (f.retired || (!editing && !fd) || (editing && f.readonly && !fd))) return "";
     const shared=!!cx && !fd;
+    if(f.note){   // notes row: one text box across every value column
+      const v=String(cells[0]==null?"":cells[0]);
+      return `<tr class="note-row"><td class="k">${esc(f.label)}</td><td class="v" colspan="${cols.length}">${
+        editing ? evCell(id,"f."+f.k,v,shared,true) : (esc(v)||'<span class="none">—</span>')}${tag(fd)}</td>${
+        rowXCell(editing, has, `data-kvdel="f.${esc(f.k)}"`, f.label, shared)}</tr>`;
+    }
     const td=(c,last)=>{ const v=String(cells[c.pos]==null?"":cells[c.pos]);
       let h;
       if(c.pos===0) h = (editing && !f.readonly) ? evCell(id,"f."+f.k,v,shared)
@@ -873,7 +884,7 @@ async function commitPath(id, path, value, shared, cur){
 function beginEdit(sp,id){
   const path=sp.dataset.ev; const cur=getPath(id,path); const shared=sp.dataset.shared==="1";
   const p=path.split("."); if(p[0]==="f" && DATE_KEYS[p[1]]) return beginDateEdit(sp,id,path,cur,shared);
-  const long=(path==="note");
+  const long=(path==="note" || sp.dataset.long==="1");
   const inp=document.createElement(long?"textarea":"input"); inp.className="ed-in"; inp.value=cur||"";
   sp.replaceWith(inp); inp.focus();
   let done=false;
@@ -1054,15 +1065,16 @@ function exportCIS(id){
   fullRow(row.name||"(untitled)", stTitle); R++;   // title + blank row
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
-      const lines=sec.fields.map(f=>[f.label, kvCells(d,f)]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr)]))
+      const lines=sec.fields.map(f=>[f.label, kvCells(d,f), !!f.note]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr), false]))
         .filter(l=>hasCells(l[1]));
       if(!lines.length) return;
       fullRow(sec.title, stSection);
       const kc=colsFor(sec,[d]);
-      if(kc.length<2) lines.forEach(l=>kv(l[0], l[1][kc[0]?kc[0].pos:0]||""));
+      if(kc.length<2) lines.forEach(l=>kv(l[0], l[1][l[2]?0:(kc[0]?kc[0].pos:0)]||""));
       else {
         put(R,0,sec.rowHeader||"",stPHdr); kc.forEach((c,ci)=>put(R,ci+1,c.label,stPHdr)); for(let c=kc.length+1;c<NC;c++) put(R,c,"",stPHdr); R++;
-        lines.forEach(l=>{ put(R,0,l[0],stKey); kc.forEach((c,ci)=>put(R,ci+1,l[1][c.pos]||"",stPCell)); for(let c=kc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; });
+        lines.forEach(l=>{ if(l[2]){ kv(l[0], l[1][0]||""); return; }   // notes row spans the value columns
+          put(R,0,l[0],stKey); kc.forEach((c,ci)=>put(R,ci+1,l[1][c.pos]||"",stPCell)); for(let c=kc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; });
       }
       R++;
     } else if(sec.kind==="plans"){
@@ -1076,7 +1088,8 @@ function exportCIS(id){
       fullRow(sec.title, stSection);
       const gc=colsFor(sec,[d]);
       put(R,0,sec.rowHeader||"",stPHdr); gc.forEach((c,ci)=>put(R,ci+1,c.label,stPHdr)); for(let c=gc.length+1;c<NC;c++) put(R,c,"",stPHdr); R++;
-      rows.forEach(r=>{ put(R,0,r.label,stKey); gc.forEach((c,ci)=>put(R,ci+1,r.cells[c.pos]||"",stPCell)); for(let c=gc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; }); R++;
+      rows.forEach(r=>{ if(r.note){ kv(r.label, r.cells[0]||""); return; }   // notes row spans the value columns
+        put(R,0,r.label,stKey); gc.forEach((c,ci)=>put(R,ci+1,r.cells[c.pos]||"",stPCell)); for(let c=gc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
       fullRow(sec.title, stSection); fullRow(t, stVal); R++;
@@ -1119,8 +1132,9 @@ function exportCISpdf(id, opts){
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
       const kc=colsFor(sec,[d]);
-      const body=sec.fields.map(f=>[f.label, kvCells(d,f)]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr)]))
-        .filter(l=>hasCells(l[1])).map(l=>[l[0], ...kc.map(c=>l[1][c.pos]||"")]);
+      const body=sec.fields.map(f=>[f.label, kvCells(d,f), !!f.note]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr), false]))
+        .filter(l=>hasCells(l[1])).map(l=> l[2] ? [l[0], kc.length<2 ? (l[1][0]||"") : {content:l[1][0]||"", colSpan:kc.length}]
+                                               : [l[0], ...kc.map(c=>l[1][c.pos]||"")]);
       if(body.length && kc.length<2) sectionTable(sec.title, body);
       else if(body.length) sectionTable(sec.title, body, { cols:kc.length+1, extra:{ head:[[
           {content:sec.title,colSpan:kc.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
@@ -1136,7 +1150,7 @@ function exportCISpdf(id, opts){
     } else if(sec.kind==="grid"){
       const gc=colsFor(sec,[d]);
       const body=gridAll(sec,d).filter(r=>hasCells(r.cells))   // blank rows don't print
-        .map(r=>[r.label, ...gc.map(c=>r.cells[c.pos]||"")]);
+        .map(r=> r.note ? [r.label, {content:r.cells[0]||"", colSpan:Math.max(1,gc.length)}] : [r.label, ...gc.map(c=>r.cells[c.pos]||"")]);
       if(body.length){
         sectionTable(sec.title, body, { cols:gc.length+1, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
           {content:sec.title,colSpan:gc.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
@@ -1183,7 +1197,8 @@ function clusterExportModel(grp){
       if(tabs.length) secs.push({kind:"plans", title:sec.title, head:cols.map(c=>c.label), tabs});
     } else if(sec.kind==="grid"){
       const cols=colsFor(sec,cx.datas);
-      const rowsOf=d=>gridAll(sec,d).map(r=>[r.label, ...cols.map(c=>S(r.cells[c.pos]))]).filter(r=>r.slice(1).some(x=>x));
+      const rowsOf=d=>gridAll(sec,d).map(r=> r.note ? [r.label, S(r.cells[0]), ...cols.slice(1).map(()=>"")]
+                                                    : [r.label, ...cols.map(c=>S(r.cells[c.pos]))]).filter(r=>r.slice(1).some(x=>x));
       const js=cx.datas.map(d=>JSON.stringify(rowsOf(d)));
       const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
@@ -1654,9 +1669,24 @@ async function discardDraft(id){
   if(!(await uiConfirm("Discard this draft? The published version stays live.",{title:"Discard draft",okText:"Discard",danger:true}))) return;
   await sb.from("cdb_cis").delete().eq("community_id",id).eq("status","draft"); await loadAll(); render();
   const still=itemById(id); if(still) openDetail(id); }
+/* In a community with several enclaves this asks: just the selected enclave, or
+   every enclave (only the ones not already in that state are touched). */
 async function setActive(id, active){
-  if(!active && !(await uiConfirm("Set this community inactive? It will be hidden from viewers by default (they can opt to show inactive).",{title:"Set inactive",okText:"Set inactive"}))) return;
-  const { error } = await sb.from("cdb_cis").update({active}).eq("community_id",id);
+  const grp=clusterFor(id); const it=itemById(id);
+  const verb=active?"active":"inactive";
+  const hideNote=active?"":" Inactive communities are hidden from viewers by default (they can opt to show inactive).";
+  let ids=[id];
+  if(grp && grp.items.length>1){
+    const others=grp.items.filter(x=>x.active!==active);   // enclaves that would actually change
+    const c=await openModal({ title:`Set ${verb}`,
+      body:`<p><b>${esc(grp.name)}</b> has ${grp.items.length} enclaves. Set which of them ${verb}?${esc(hideNote)}</p>`,
+      buttons:[{label:"Cancel",value:"x"},
+               {label:`Only ${encLabel(grp,it)}`,value:"one"},
+               {label:`All ${grp.items.length} enclaves`,value:"all",primary:!active?false:true,danger:!active}] });
+    if(c==null||c==="x") return;
+    if(c==="all") ids=others.length?others.map(x=>x.id):[id];
+  } else if(!active && !(await uiConfirm("Set this community inactive?"+hideNote,{title:"Set inactive",okText:"Set inactive"}))) return;
+  const { error } = await sb.from("cdb_cis").update({active}).in("community_id",ids);
   if(error){ uiAlert("Couldn't update: "+error.message,"Error"); return; }
   await loadAll(); render(); if(itemById(id)) openDetail(id);
 }
@@ -1746,7 +1776,7 @@ function gapRows(){
   // the row you can actually see (published for viewers, draft in maker mode)
   visibleItems().forEach(it=>{ const row=shownRow(it); if(!row) return; const d=row.data||{}; const f=d.f||{};
     SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv" || sec.retired) return;
-      sec.fields.forEach(fl=>{ if(fl.readonly || fl.retired) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
+      sec.fields.forEach(fl=>{ if(fl.readonly || fl.retired || fl.note) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
   });
   return rows;
@@ -1894,12 +1924,13 @@ function tplSecHTML(s, si, canUp, canDown){
   if(isPlans) body=`<tr><td class="tg-note" colspan="${span}">Plan rows are added on each sheet.</td></tr>`;
   else {
     const blanks=`<td class="tg-cell"></td>`.repeat(cols.length)+`<td class="tg-cell tg-pad"></td>`;
+    const noteCell=`<td class="tg-cell tg-notecell" colspan="${Math.max(1,cols.length)}"><span>Notes — one text box across the row</span></td><td class="tg-cell tg-pad"></td>`;
     body=rows.map((o,n)=>{ const r=o.r; const lk=LIST.r.locked(s,r);
       return `<tr data-row data-s="${si}" data-r="${o.i}"><td class="tg-lbl">${line(
         `<button class="tg-grip" data-grip data-s="${si}" data-r="${o.i}" title="Drag to move — up/down, or into another section (arrow keys also work)" aria-label="Move ${esc(r.label||"row")}">&#8942;&#8942;</button><input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">`,
-        `<span class="tg-meta">${tags("r",r,lk)}${use(LIST.r.use(s,r))}${ctl("r",o,n,rows.length,lk)}</span>`)}</td>${blanks}</tr>`; }).join("");
+        `<span class="tg-meta">${r.note?'<span class="autotag">notes</span>':""}${tags("r",r,lk)}${use(LIST.r.use(s,r))}${ctl("r",o,n,rows.length,lk)}</span>`)}</td>${r.note?noteCell:blanks}</tr>`; }).join("");
     if(!rows.length) body+=`<tr><td class="tg-note" colspan="${span}">No rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</td></tr>`;
-    body+=`<tr data-rowend data-s="${si}"><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button></td></tr>`;
+    body+=`<tr data-rowend data-s="${si}"><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button> <button class="tbtn add" data-act="nadd" data-s="${si}" title="Add a full-width notes row at the bottom of this section">+ Notes</button></td></tr>`;
   }
   h+=`<div class="tscroll"><table class="tpl-g">${head}${body}</table></div>`;
 
@@ -1951,6 +1982,12 @@ async function tplAct(act, si, ri){
     }
     T.splice(si,1); delete state.tplNew[s.id];
     return tplRepaint();
+  }
+  if(act==="nadd"){   // a notes row: one full-width text box, added at the bottom of the section
+    const list=tplRowList(s); if(!list) return;
+    let n=1, label; do { label=n===1?"Notes":`Notes ${n}`; n++; } while(list.some(x=>!x.retired && lc(x.label)===lc(label)));
+    const x={ k:rid(s.kind==="kv"?"c_":"r_"), label, note:true }; list.push(x); state.tplNew[LIST.r.key(s,x)]=1;
+    tplRepaint(); return tplFocus(`.tg-in[data-edit="row"][data-s="${si}"][data-r="${list.length-1}"]`);
   }
   const t=act[0], op=act.slice(1); const L=LIST[t]; const list=L&&L.get(s); if(!list) return;
   if(op==="add"){
@@ -2013,6 +2050,7 @@ function tplCanMove(fs, fr, ts){
 /* which column slots hold a value for this row on any sheet */
 function tplRowSlots(S, x){
   const out=new Set();
+  if(x.note) return out;                       // a notes row's text isn't tied to a column
   const add=cells=>(cells||[]).forEach((v,i)=>{ if(v!=null && String(v).trim()!=="") out.add(i); });
   state.items.forEach(it=>[it.pub,it.draft].forEach(row=>{ if(!row) return; const d=row.data||{};
     if(S.kind==="kv") add(kvCells(d,x));
@@ -2027,7 +2065,7 @@ function tplMoveRow(fs, fr, ts, before){
   else {
     const oldKey=LIST.r.key(S,x); const wasNew=!!state.tplNew[oldKey];
     sl.splice(fr,1); delete state.tplNew[oldKey];
-    if(S.kind!==D.kind) x={ k:rid(D.kind==="kv"?"c_":"r_"), label:x.label };   // empty row: re-key for its new home
+    if(S.kind!==D.kind) x={ k:rid(D.kind==="kv"?"c_":"r_"), label:x.label, ...(x.note?{note:true}:{}) };   // empty row: re-key for its new home
     else if(S.kind==="grid"){ if(!x.dkey) x.dkey=S.key; if(x.dkey===D.key) delete x.dkey; }  // cells stay where they are
     dl.splice(before==null?dl.length:before, 0, x);
     if(wasNew || S.kind!==D.kind) state.tplNew[LIST.r.key(D,x)]=1;
