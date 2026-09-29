@@ -30,7 +30,7 @@ window.APP_CONFIG = {
 };
 
 /* ------------------------------------------------------------------
-   CIS SCHEMA — mirrors the "Community Information Sheets" workbook.
+   CIS SCHEMA (default template) — mirrors the "Community Information Sheets" workbook.
    Every value lives in the CIS row's `data`:
      data.f[<key>]      – all key/value fields (across sections)
      data.plans[]       – Floor Plans rows (5 columns)
@@ -111,11 +111,6 @@ window.CIS = {
   ]
 };
 
-/* normalize a label for matching (lowercase, strip punctuation/whitespace/asterisks) */
-window.CIS.norm = s => String(s==null?"":s).toLowerCase().replace(/[\s:*]+/g," ").replace(/[^a-z0-9 /&.'-]/g,"").trim();
-/* normalized-label -> {sec,key} index for import */
-window.CIS.labelIndex = (function(){
-  const idx={};
-  window.CIS.SECTIONS.forEach(sec=>{ (sec.fields||[]).forEach(f=>{ idx[window.CIS.norm(f.label)]={sec:sec.id,key:f.k}; }); });
-  return () => idx;
-})();
+/* SECTIONS above is the DEFAULT template. Once an admin saves the template in
+   the app's Template tab, the saved layout (table cdb_template) is used instead
+   and this list is only the fallback. */

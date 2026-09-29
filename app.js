@@ -24,7 +24,8 @@ if (!DEMO && window.supabase) {
 
 const state = { changeLog:[], encCompare:false, email:null, role:"viewer", mode:"view", view:"browse",
                 items:[], notes:[], imgs:{}, imgUrls:{}, sel:null, q:"", showInactive:false, draftsOnly:false, users:[],
-                pubq:[], pubqOpen:true, pubqBusy:false };
+                pubq:[], pubqOpen:true, pubqBusy:false,
+                tpl:null, tplNew:{}, tplMeta:{}, tplBusy:false };
 const $  = id => document.getElementById(id);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const lc = s => String(s==null?"":s).toLowerCase();
@@ -36,6 +37,43 @@ function normDate(s){ const m=String(s==null?"":s).trim().match(/^(\d{1,2})[.\/-
 function dateToISO(s){ const m=String(s==null?"":s).trim().match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
   if(!m) return ""; let y=+m[3]; if(y<100) y+=2000; return `${y}-${String(+m[1]).padStart(2,"0")}-${String(+m[2]).padStart(2,"0")}`; }
 function isoToDate(iso){ const m=String(iso||"").match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?`${+m[2]}.${+m[3]}.${String((+m[1])%100).padStart(2,"0")}`:iso; }
+/* ---------------- TEMPLATE ----------------
+   The section/row layout every sheet renders with. Defaults come from config.js;
+   an admin-saved layout in cdb_template replaces them at sign-in.
+   Template edits never touch community data:
+   - a removed row/section is marked `retired` — it drops off sheets where it's
+     empty, and sheets that already hold a value keep it and keep showing it;
+   - grid (Model) rows carry either `pos` (the original positional rows, cells in
+     d.model[pos]) or `k` (rows added by the template, cells in d.gridx[key][k]),
+     so adding/reordering template rows never shifts existing cell data. Per-sheet
+     custom rows stay at d.model[presetBase + j] with labels in d.model_labels. */
+const TPL_ID = (CFG.DIVISION && CFG.DIVISION.key) || "orlando";
+const clone = o => JSON.parse(JSON.stringify(o));
+function normTemplate(secs){
+  return (Array.isArray(secs)?secs:[]).filter(s=>s&&s.id&&s.kind).map(s0=>{ const s=clone(s0);
+    s.title=String(s.title||"");
+    if(s.kind==="kv") s.fields=(Array.isArray(s.fields)?s.fields:[]).filter(f=>f&&f.k).map(f=>({...f,label:String(f.label||"")}));
+    if(s.kind==="grid"){
+      if(!Array.isArray(s.rows)) s.rows=(s.rowLabels||[]).map((l,i)=>({label:String(l||""),pos:i}));
+      if(typeof s.presetBase!=="number") s.presetBase=Array.isArray(s.rowLabels)?s.rowLabels.length
+        : s.rows.reduce((m,r)=>typeof r.pos==="number"?Math.max(m,r.pos+1):m,0);
+      delete s.rowLabels; s.columns=Array.isArray(s.columns)?s.columns:[];
+    }
+    return s; });
+}
+SCHEMA.DEFAULT_SECTIONS = normTemplate(SCHEMA.SECTIONS);
+SCHEMA.SECTIONS = clone(SCHEMA.DEFAULT_SECTIONS);
+async function loadTemplate(){
+  state.tplMeta={ updated_at:null, updated_by:null, saved:false };
+  if(DEMO||!sb) return;
+  try{ const { data, error }=await sb.from("cdb_template").select("*").eq("id",TPL_ID).maybeSingle();
+    if(error){ console.warn("template load failed — using defaults",error); return; }
+    if(data && Array.isArray(data.sections) && data.sections.length){
+      SCHEMA.SECTIONS=normTemplate(data.sections);
+      state.tplMeta={ updated_at:data.updated_at, updated_by:data.updated_by, saved:true };
+    }
+  }catch(e){ console.warn("template load failed — using defaults",e); }
+}
 const isEditor = () => state.role==="editor" || state.role==="admin";
 const isAdmin  = () => state.role==="admin";
 const making   = () => state.mode==="make" && isEditor();
@@ -154,7 +192,7 @@ async function enterApp(email){
   if(isEditor()){ $("modeToggle").classList.remove("hidden"); }
   if(isAdmin()) $("adminLink").classList.remove("hidden");
   wireChrome(); syncEditorTabs(); pubqLoad();
-  await loadAll(); render(); refreshWhatsNewBadge();
+  await loadTemplate(); await loadAll(); render(); refreshWhatsNewBadge();
   applyDeepLink();
 }
 /* ---------------- DEEP LINK ----------------
@@ -190,8 +228,11 @@ function applyDeepLink(){
 }
 // also honour a link pasted into a tab that is already open and signed in
 window.addEventListener("hashchange", ()=>{ if(state.email) applyDeepLink(); });
-// Gaps + Add/import live on the maker side only — hidden in Viewer mode.
-function syncEditorTabs(){ document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making())); }
+// Gaps and Template live on the maker side only (editors + admins).
+function syncEditorTabs(){
+  document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making()));
+}
+window.addEventListener("beforeunload", e=>{ if(state.tpl && tplDirty()){ e.preventDefault(); e.returnValue=""; } });
 function wireChrome(){
   $("logoutBtn").onclick=logout; $("themeBtn").onclick=toggleTheme;
   if($("whatsNewBtn")) $("whatsNewBtn").onclick=openWhatsNew;
@@ -199,7 +240,7 @@ function wireChrome(){
   $("adminLink").onclick=showAdmin; $("dashLink").onclick=()=>{ showDash(); render(); };
   $("modeToggle").querySelectorAll(".mode").forEach(b=>b.onclick=()=>{
     state.mode=b.dataset.mode; $("modeToggle").querySelectorAll(".mode").forEach(x=>x.classList.toggle("on",x===b));
-    if(state.mode==="view" && (state.view==="gaps"||state.view==="add")){ state.view="browse"; setTab(); }
+    if(state.mode==="view" && (state.view==="gaps"||state.view==="template")){ state.view="browse"; setTab(); }
     syncEditorTabs(); render();
   });
   $("tabs").querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ state.view=t.dataset.view; setTab(); showDash(); render(); });
@@ -273,12 +314,13 @@ function render(){
   a.classList.remove("mob-detail");   // reset mobile detail state on any view change
   if(state.view==="browse") return renderBrowse(a);
   if(state.view==="gaps"  && making()) return renderGaps(a);
-  if(state.view==="add"   && isEditor()) return renderAdd(a);
+  if(state.view==="template" && making()) return renderTemplate(a);
   state.view="browse"; setTab(); renderBrowse(a);
 }
 function updateCounts(){
   $("cBrowse").textContent = clusterList().length;
   const g=$("cGaps"); if(g) g.textContent = making()? gapRows().length : "";
+  const t=$("cTpl"); if(t) t.classList.toggle("hidden", !(state.tpl && tplDirty()));
 }
 
 /* ---------------- COMMUNITY CLUSTERS (enclaves) ----------------
@@ -332,10 +374,12 @@ function clusterFor(id){
 /* ---------------- BROWSE ---------------- */
 function renderBrowse(a){
   const groups=clusterList();
+  const draftN=making()?state.items.filter(it=>it.hasDraft).length:0;
   a.innerHTML = `
     <div class="bar">
       <input type="search" id="q" placeholder="Search name, JDE, plan #, or any field (e.g. H006)…" value="${esc(state.q)}">
       ${making()?`<button class="btn mini solid" id="newComm">+ New community</button>
+                  ${draftN?`<button class="btn mini ghost" id="pubAll" title="Make every current draft live for viewers">Publish all drafts (${draftN})</button>`:""}
                   <label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="draftsOnly" ${state.draftsOnly?"checked":""}> Drafts only</label>`
                 :`<label class="hint" style="display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="showInactive" ${state.showInactive?"checked":""}> Show inactive</label>`}
       <span class="hint">${groups.length} ${groups.length===1?"community":"communities"}${making()?" · editing drafts":""}</span>
@@ -348,6 +392,7 @@ function renderBrowse(a){
     l.innerHTML=gs.map(groupRowHTML).join("")||`<div class="empty">No matches.</div>`; wireRows(); updateCounts(); };
   $("q").addEventListener("input",e=>{ state.q=e.target.value; repaintList(); });
   if(making()){ $("newComm").onclick=newCommunity;
+    if($("pubAll")) $("pubAll").onclick=()=>publishAllDrafts();
     if($("draftsOnly")) $("draftsOnly").onclick=e=>{ state.draftsOnly=e.target.checked; repaintList(); }; }
   else if($("showInactive")) $("showInactive").onclick=e=>{ state.showInactive=e.target.checked; repaintList(); };
   wireRows();
@@ -441,8 +486,10 @@ function openDetail(id){
       <div>${esc(heading)}<span class="s">${sub}</span></div></div>
       <div class="acts">${acts.join("")}</div></div>`;
 
-  if(!multi){ SCHEMA.SECTIONS.forEach(sec=>{ h+=renderSection(sec, d, editing, id); }); }
-  else { const cx=clusterContext(grp); SCHEMA.SECTIONS.forEach(sec=>{ h+=renderClusterSection(sec, cx, it, editing); }); }
+  // a retired (removed-from-template) section only shows where it still holds data
+  if(!multi){ SCHEMA.SECTIONS.forEach(sec=>{ if(sec.retired && !secHasData(sec,d)) return; h+=renderSection(sec, d, editing, id); }); }
+  else { const cx=clusterContext(grp); SCHEMA.SECTIONS.forEach(sec=>{
+    if(sec.retired && !cx.datas.some(dd=>secHasData(sec,dd))) return; h+=renderClusterSection(sec, cx, it, editing); }); }
   // images (per enclave — a cluster shows the selected enclave's images)
   h+=`<div class="sec"><span>Images${multi?` — ${esc(actLbl)}`:""}</span><span class="sec-right">${editing?`<button data-imgadd>Add image</button>`:""}${multi?encWrapHTML(grp,it):""}</span></div>`;
   h+=imagesHTML(id, editing);
@@ -495,11 +542,35 @@ function evCell(id,path,v,shared){ // editable value span; shared=1 asks "all en
    Revision Date, and isn't the Community Name — that one names the record in the
    list, so it stays renameable but not removable. */
 function kvRemovable(f, v){ return !!v && !f.readonly && f.k!==SCHEMA.IDENTITY.name; }
-/* A grid record's full label list = the section's fixed preset labels followed by
-   any user-added (custom) row labels stored on the record in d.model_labels. Cell
-   arrays live in d[sec.key] at the SAME index as the label, so callers can iterate
-   this list and read d[sec.key][i] for both preset and custom rows. */
-function gridLabels(sec, d){ return sec.rowLabels.concat(Array.isArray(d&&d.model_labels)?d.model_labels:[]); }
+const hasCells = c => Array.isArray(c) && c.some(x=>x!=null && String(x).trim()!=="");
+/* Every row of a grid (Model) section for one record, in display order:
+   template rows first (original positional `pos` rows and template-added `k`
+   rows, in the template's order), then this sheet's own custom rows.
+     type   'preset' | 'tpl' | 'custom'
+     path   edit-path prefix — append "."+columnIndex
+     clr    data-attribute value for the row X (clear or remove) */
+function gridAll(sec, d){
+  d=d||{}; const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
+  const gx=((d.gridx||{})[sec.key])||{};
+  const out=[];
+  (sec.rows||[]).forEach(r=>{
+    if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:arr[r.pos]||[], retired:!!r.retired, path:`m.${r.pos}`, clr:`m:${r.pos}`});
+    else if(r.k) out.push({type:"tpl", label:r.label, cells:gx[r.k]||[], retired:!!r.retired, path:`mx.${sec.key}.${r.k}`, clr:`x:${r.k}`});
+  });
+  const P=sec.presetBase||0;
+  (Array.isArray(d.model_labels)?d.model_labels:[]).forEach((lbl,j)=>
+    out.push({type:"custom", label:lbl, cells:arr[P+j]||[], j, path:`m.${P+j}`}));
+  return out;
+}
+/* does this record hold anything in this section? (drives retired-section visibility) */
+function secHasData(sec, d){
+  d=d||{};
+  if(sec.kind==="kv") return (sec.fields||[]).some(f=>fval(d,f.k)) || ((d.extra||{})[sec.id]||[]).some(p=>p&&String(p[1]||"").trim());
+  if(sec.kind==="plans") return Array.isArray(d.plans) && d.plans.some(hasCells);
+  if(sec.kind==="grid") return gridAll(sec,d).some(r=>hasCells(r.cells) || (r.type==="custom" && String(r.label||"").trim()));
+  if(sec.kind==="note") return String(d.note==null?"":d.note).trim()!=="";
+  return false;
+}
 /* The maker's row X — the same control on plan rows, spec lines and model rows.
    `on` is false for a row there's nothing to remove from: the cell still renders
    so the column stays aligned, just without a button. */
@@ -514,7 +585,7 @@ function rowXCell(editing, on, attrs, label, shared){
    Returns {btn, body}; body==="" means the section is hidden for this record. */
 function sectionParts(sec, d, editing, id){
   if(sec.kind==="kv"){
-    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly)) return "";
+    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly || f.retired)) return "";
       const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v)
                  : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>` : esc(v));
       return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td>${
@@ -534,40 +605,34 @@ function sectionParts(sec, d, editing, id){
       return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
     let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${
       rowXCell(editing, true, `data-pldel="${ri}"`, _planRowLabel(r)||"this row")}</tr>`).join("");
-    return { btn: editing?`<button data-pladd="1">Add row</button>`:"",
+    return { btn: (editing && !sec.retired)?`<button data-pladd="1">Add row</button>`:"",
              body: `<div class="tscroll"><table class="plans-t">${head}${body}</table></div>` };
   }
   if(sec.kind==="grid"){
-    const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
-    const P=sec.rowLabels.length;                                  // fixed preset rows occupy indices 0..P-1
-    const custom=Array.isArray(d.model_labels)?d.model_labels:[];  // user-added rows occupy indices P..P+n-1
-    const rowHas=ri=>{ const r=arr[ri]||[]; return Array.isArray(r)&&r.some(x=>x!=null&&String(x).trim()!==""); };
-    const anyPreset=sec.rowLabels.some((_,ri)=>rowHas(ri));
-    const anyCustom=custom.some((lbl,j)=>rowHas(P+j) || String(lbl||"").trim()!=="");
-    if(!anyPreset && !anyCustom && !editing) return { btn:"", body:"" };
-    // Blank preset rows never show on the published/viewer side (same as the kv lines).
-    // In maker mode the default is the filled preset rows plus ONE blank entry row;
-    // "Show all rows" reveals the rest of the preset labels when they're needed.
-    // User-added (custom) rows are always shown in maker mode and are fully removable.
-    // A preset row shows when it has data, or when "Show all rows" is on (so empty
-    // presets can be filled on demand). There is NO forced blank entry row — an
-    // empty preset is not shown by default, so it can't sit there as an
-    // unremovable stale line. New rows are added with the "Add row" button.
+    const all=gridAll(sec, d);
+    if(!secHasData(sec,d) && !editing) return { btn:"", body:"" };
+    // Blank template rows never show on the viewer side (same as the kv lines).
+    // In maker mode a template row shows when it has data, or when "Show all rows"
+    // is on (so empty rows can be filled on demand). A row removed from the
+    // template (retired) only ever shows where it still has data.
+    // Per-sheet custom rows are always shown in maker mode and are fully removable.
     const showAll = editing && state.gridShowAll && state.gridShowAll[sec.key];
-    const visible=sec.rowLabels.map((lbl,ri)=> rowHas(ri) || (editing && showAll));
-    const hiddenN=editing?visible.filter(v=>!v).length:0;
+    const tplRows=all.filter(r=>r.type!=="custom");
+    const vis=r=> hasCells(r.cells) || (editing && showAll && !r.retired);
+    const hiddenN=editing?tplRows.filter(r=>!r.retired && !hasCells(r.cells)).length:0;
     let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
-    // preset rows: fixed label; the X clears the row (label is kept so it can be refilled)
-    let body=sec.rowLabels.map((lbl,ri)=>{ if(!visible[ri]) return ""; const row=arr[ri]||[];
-      return `<tr><td class="k">${esc(lbl)}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
-        rowXCell(editing, rowHas(ri), `data-mdel="${esc(sec.key)}.${ri}"`, lbl)}</tr>`; }).join("");
+    const cells=r=>sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`${r.path}.${ci}`,r.cells[ci]||""):esc(r.cells[ci]||"")}</td>`).join("");
+    // template rows: fixed label; the X clears the row (label is kept so it can be refilled)
+    let body=tplRows.map(r=>{ if(!vis(r)) return "";
+      return `<tr><td class="k">${esc(r.label)}</td>${cells(r)}${
+        rowXCell(editing, hasCells(r.cells), `data-mdel="${esc(sec.key)}|${esc(r.clr)}"`, r.label)}</tr>`; }).join("");
     // custom rows: editable label + the X fully removes the row (like the Plans table)
-    body+=custom.map((lbl,j)=>{ const ri=P+j; const row=arr[ri]||[];
-      if(!editing && !rowHas(ri) && String(lbl||"").trim()==="") return "";
-      const labelCell=editing?evCell(id,`ml.${j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
-      return `<tr><td class="k">${labelCell}</td>${sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`m.${ri}.${ci}`,row[ci]||""):esc(row[ci]||"")}</td>`).join("")}${
-        rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${j}"`, lbl||"this row", true)}</tr>`; }).join("");
-    const addBtn=editing?`<button data-gridadd="${esc(sec.key)}">Add row</button>`:"";
+    body+=all.filter(r=>r.type==="custom").map(r=>{ const lbl=r.label;
+      if(!editing && !hasCells(r.cells) && String(lbl||"").trim()==="") return "";
+      const labelCell=editing?evCell(id,`ml.${r.j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
+      return `<tr><td class="k">${labelCell}</td>${cells(r)}${
+        rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${r.j}"`, lbl||"this row", true)}</tr>`; }).join("");
+    const addBtn=(editing && !sec.retired)?`<button data-gridadd="${esc(sec.key)}">Add row</button>`:"";
     const moreBtn=(editing && (hiddenN||showAll))?` <button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"";
     return { btn: addBtn+moreBtn,
              body: `<div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>` };
@@ -603,7 +668,7 @@ function clusterContext(grp){
       if(cx.extraDiff[sec.id]) dif=true;
       cx.diff[sec.id]=dif;
     } else if(sec.kind==="plans"){ const js=datas.map(d=>JSON.stringify(d.plans||[])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
-    else if(sec.kind==="grid"){ const js=datas.map(d=>JSON.stringify([d[sec.key]||[], d.model_labels||[]])); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
+    else if(sec.kind==="grid"){ const js=datas.map(d=>JSON.stringify(gridAll(sec,d).map(r=>[r.label,r.cells]))); cx.diff[sec.id]=!js.every(x=>x===js[0]); }
     else if(sec.kind==="note"){ cx.diff[sec.id]=!same(datas.map(d=>d.note||"")); }
   });
   return cx;
@@ -620,6 +685,7 @@ function kvClusterBody(sec, cx, ai, editing){
   let rows=sec.fields.map(f=>{
     const v=fval(d,f.k); const fd=!!cx.fieldDiff[f.k];
     if(!v && !editing && !fd) return "";                            // shared blank: hidden as always
+    if(!v && f.retired) return "";                                  // removed from the template: only filled sheets keep it
     const showDash = !v && !editing && fd;                          // differs elsewhere: keep the row so switching enclaves makes sense
     const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v,!fd)
                : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>`
@@ -661,10 +727,10 @@ function compareBody(sec, cx){
     // Pair rows by LABEL, not by position — custom rows differ per enclave, so a
     // shared index would show one enclave's row under another's label. Build a
     // per-enclave label->cells map and a union of labels (presets first).
-    const maps=cx.datas.map(d=>{ const g=gridLabels(sec,d); const arr=Array.isArray(d[sec.key])?d[sec.key]:[]; const m=new Map();
-      g.forEach((lbl,i)=>{ if(String(lbl||"").trim()!=="") m.set(lbl.toLowerCase(), {lbl, cells:arr[i]||[]}); }); return m; });
+    const maps=cx.datas.map(d=>{ const m=new Map();
+      gridAll(sec,d).forEach(r=>{ const lbl=String(r.label||""); if(lbl.trim()!=="" && !m.has(lbl.toLowerCase())) m.set(lbl.toLowerCase(), {lbl, cells:r.cells}); }); return m; });
     const order=[]; const seen=new Set();
-    sec.rowLabels.forEach(l=>{ const k=l.toLowerCase(); if(!seen.has(k)){ seen.add(k); order.push({k, lbl:l}); } });
+    (sec.rows||[]).forEach(r=>{ const l=String(r.label||""); const k=l.toLowerCase(); if(l && !seen.has(k)){ seen.add(k); order.push({k, lbl:l}); } });
     maps.forEach(m=>m.forEach((v,k)=>{ if(!seen.has(k)){ seen.add(k); order.push({k, lbl:v.lbl}); } }));
     order.forEach(({k,lbl})=>{
       const vals=maps.map(m=>{ const e=m.get(k); return e?e.cells.filter(x=>S(x)).join(" · "):""; });
@@ -703,8 +769,8 @@ function wireEditables(id){
   $("detail").querySelectorAll("[data-kvdel]").forEach(b=>b.onclick=()=>kvDel(id,b.dataset.kvdel,b.dataset.shared==="1",b.dataset.rowlabel));
   $("detail").querySelectorAll("[data-xdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.xdel.split(".");
     xDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
-  $("detail").querySelectorAll("[data-mdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mdel.split(".");
-    gridDel(id,p[0],+p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
+  $("detail").querySelectorAll("[data-mdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mdel.split("|");
+    gridDel(id,p[0],p[1],b.dataset.shared==="1",b.dataset.rowlabel); });
   $("detail").querySelectorAll("[data-gridadd]").forEach(b=>b.onclick=()=>gridAdd(id,b.dataset.gridadd));
   $("detail").querySelectorAll("[data-mrowdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mrowdel.split("."); gridRowDel(id,p[0],+p[1],b.dataset.rowlabel,b.dataset.shared==="1"); });
   $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
@@ -772,6 +838,7 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
   if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
   if(kind==="m"){ const r=(d.model||[])[+p[1]]||[]; return r[+p[2]]; }
   if(kind==="ml"){ return (d.model_labels||[])[+p[1]]; }
+  if(kind==="mx"){ const r=(((d.gridx||{})[p[1]])||{})[p[2]]||[]; return r[+p[3]]; }
   if(kind==="x"){ const arr=(d.extra||{})[p[1]]||[]; const pair=arr[+p[2]]||[]; return pair[1]; }
   return "";
 }
@@ -787,20 +854,24 @@ async function setPath(id,path,value){
   else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||["","","","",""]; r[+p[2]]=value; }
   else if(kind==="m"){ d.model=d.model||[]; const r=d.model[+p[1]]=d.model[+p[1]]||["","","",""]; r[+p[2]]=value; }
   else if(kind==="ml"){ d.model_labels=d.model_labels||[]; d.model_labels[+p[1]]=value; }
+  else if(kind==="mx"){ d.gridx=d.gridx||{}; const g=d.gridx[p[1]]=d.gridx[p[1]]||{};
+    const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===p[1]); const n=sec?sec.columns.length:4;
+    const r=g[p[2]]=Array.isArray(g[p[2]])?g[p[2]]:Array.from({length:n},()=>""); r[+p[3]]=value; }
   else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
 async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); if(!row) return; const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
 /* Add a custom row to a grid (Model) section: a blank editable label + blank cells,
-   appended after the fixed preset rows. Preset slots are padded so cell indices
-   stay aligned with gridLabels(). */
+   appended after the positional preset rows. Slots are padded so the new cells
+   land at presetBase + j, matching gridAll(). */
 async function gridAdd(id, key){
   const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{};
-  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.rowLabels.length:0;
+  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.presetBase:0;
   d[key]=Array.isArray(d[key])?d[key]:[];
-  while(d[key].length<P) d[key].push([]);
-  d[key].push((sec?sec.columns:[0,0,0,0]).map(()=>""));
+  const at=P+(Array.isArray(d.model_labels)?d.model_labels.length:0);
+  while(d[key].length<at) d[key].push([]);
+  d[key][at]=(sec?sec.columns:[0,0,0,0]).map(()=>"");
   d.model_labels=Array.isArray(d.model_labels)?d.model_labels:[];
   d.model_labels.push("");
   await saveDraft(row); openDetail(id);
@@ -813,7 +884,7 @@ async function gridAdd(id, key){
 async function gridRowDel(id, key, j, label, shared){
   const ids = shared ? await delScope(id, shared, label) : [id];
   if(!ids) return;
-  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.rowLabels.length:0;
+  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.presetBase:0;
   for(const x of ids){
     const row=await ensureDraft(x); if(!row) continue; const d=row.data||{};
     const labels=Array.isArray(d.model_labels)?d.model_labels:[];
@@ -864,12 +935,17 @@ async function xDel(id, secId, xi, shared, label){
   }
   openDetail(id);
 }
-async function gridDel(id, key, ri, shared, label){
+/* ref is "m:<pos>" (original positional row) or "x:<k>" (template-added row) */
+async function gridDel(id, key, ref, shared, label){
   const ids=await delScope(id, shared, label); if(!ids) return;
+  const [t,v]=String(ref).split(":");
   for(const x of ids){
     const row=await ensureDraft(x); if(!row) continue;
-    const arr=(row.data=row.data||{})[key];
-    if(Array.isArray(arr) && Array.isArray(arr[ri])) arr[ri]=arr[ri].map(()=>"");
+    const d=row.data=row.data||{};
+    if(t==="m"){ const arr=d[key]; const ri=+v;
+      if(Array.isArray(arr) && Array.isArray(arr[ri])) arr[ri]=arr[ri].map(()=>""); }
+    else { const gx=(d.gridx||{})[key];
+      if(gx && Array.isArray(gx[v])) gx[v]=gx[v].map(()=>""); }
     await saveDraft(row); refreshItemMeta(x);
   }
   openDetail(id);
@@ -908,11 +984,10 @@ function exportCIS(id){
       SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stPHdr)); R++;
       arr.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stPCell)); R++; }); R++;
     } else if(sec.kind==="grid"){
-      const arr=d[sec.key]||[]; if(!arr.some(r=>Array.isArray(r)&&r.some(x=>x))) return;
+      const rows=gridAll(sec,d).filter(r=>hasCells(r.cells)); if(!rows.length) return;   // blank rows don't print
       fullRow(sec.title, stSection);
       put(R,0,sec.rowHeader||"",stPHdr); sec.columns.forEach((c,ci)=>put(R,ci+1,c,stPHdr)); R++;
-      gridLabels(sec,d).forEach((lbl,ri)=>{ const row=arr[ri]||[]; if(!(Array.isArray(row)&&row.some(x=>x!=null&&String(x).trim()!==""))) return;   // blank rows don't print
-        put(R,0,lbl,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,row[ci]||"",stPCell)); R++; }); R++;
+      rows.forEach(r=>{ put(R,0,r.label,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,r.cells[ci]||"",stPCell)); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
       fullRow(sec.title, stSection); fullRow(t, stVal); R++;
@@ -965,12 +1040,11 @@ function exportCISpdf(id, opts){
             SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]}});
       }
     } else if(sec.kind==="grid"){
-      const arr=d[sec.key]||[];
-      if(arr.some(r=>Array.isArray(r)&&r.some(x=>x))){
-        const body=gridLabels(sec,d).map((lbl,ri)=>{ const r=arr[ri]||[]; return [lbl, r[0]||"", r[1]||"", r[2]||"", r[3]||""]; })
-          .filter(row=>row.slice(1).some(x=>String(x==null?"":x).trim()!==""));   // blank rows don't print
-        sectionTable(sec.title, body, { cols:5, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
-          {content:sec.title,colSpan:5,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+      const body=gridAll(sec,d).filter(r=>hasCells(r.cells))   // blank rows don't print
+        .map(r=>[r.label, ...sec.columns.map((c,ci)=>r.cells[ci]||"")]);
+      if(body.length){
+        sectionTable(sec.title, body, { cols:sec.columns.length+1, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
+          {content:sec.title,colSpan:sec.columns.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
           [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...sec.columns.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
       }
     } else if(sec.kind==="note"){
@@ -1010,9 +1084,8 @@ function clusterExportModel(grp){
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:d.plans||[]}))).filter(t=>t.rows.length);
       if(tabs.length) secs.push({kind:"plans", title:sec.title, tabs});
     } else if(sec.kind==="grid"){
-      const rowsOf=d=>gridLabels(sec,d).map((lbl,ri)=>{ const r=(Array.isArray(d[sec.key])?d[sec.key]:[])[ri]||[];
-        return [lbl, ...sec.columns.map((c,ci)=>S(r[ci]))]; }).filter(r=>r.slice(1).some(x=>x));
-      const js=cx.datas.map(d=>JSON.stringify([d[sec.key]||[], d.model_labels||[]]));
+      const rowsOf=d=>gridAll(sec,d).map(r=>[r.label, ...sec.columns.map((c,ci)=>S(r.cells[ci]))]).filter(r=>r.slice(1).some(x=>x));
+      const js=cx.datas.map(d=>JSON.stringify(rowsOf(d)));
       const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
       if(tabs.length) secs.push({kind:"grid", title:sec.title, sec, tabs});
@@ -1251,7 +1324,8 @@ function diffCIS(pub, draft){
       });
       oldBy.forEach((r,k)=>{ if(!newBy.has(k)) out.plansRemoved.push(_planRowLabel(r)); });
     } else if(sec.kind==="grid"){
-      if(JSON.stringify([dOld[sec.key]||[], dOld.model_labels||[]])!==JSON.stringify([dNew[sec.key]||[], dNew.model_labels||[]]))
+      const gsig=d=>JSON.stringify([d[sec.key]||[], d.model_labels||[], (d.gridx||{})[sec.key]||{}]);
+      if(gsig(dOld)!==gsig(dNew))
         out.fields.push({sec:sec.title,label:"Table updated",from:"",to:""});
     } else if(sec.kind==="note"){
       if(String(dOld.note||"")!==String(dNew.note||""))
@@ -1571,8 +1645,8 @@ function gapRows(){
   // reflect whatever's currently displayed (search + inactive/drafts filters) and
   // the row you can actually see (published for viewers, draft in maker mode)
   visibleItems().forEach(it=>{ const row=shownRow(it); if(!row) return; const d=row.data||{}; const f=d.f||{};
-    SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv") return;
-      sec.fields.forEach(fl=>{ if(fl.readonly) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
+    SCHEMA.SECTIONS.forEach(sec=>{ if(sec.kind!=="kv" || sec.retired) return;
+      sec.fields.forEach(fl=>{ if(fl.readonly || fl.retired) return; if(isGap(f[fl.k])) rows.push({name:it.name,id:it.id,field:sec.title+" · "+fl.label,status:(lc(f[fl.k])==="tbd"?"TBD in source":"Missing")}); });
     });
   });
   return rows;
@@ -1591,219 +1665,244 @@ function renderGaps(a){
   $("gStatus").addEventListener("change",paint); paint();
 }
 
-/* ---------------- ADD / IMPORT (editor) ---------------- */
-function renderAdd(a){
-  const draftN=state.items.filter(it=>it.hasDraft).length;
-  a.innerHTML=`<div class="note"><b>Import the CIS workbook (.xlsx)</b> — one community per sheet — to create/update drafts. Imported communities land as drafts; review them, then Publish (or use "Publish all drafts").</div>
-    <div class="drop" id="dropXls"><b>Drop the Community Information Sheets .xlsx here</b><div class="hint">or click to browse — every community sheet becomes a draft</div><input type="file" id="fileXls" accept=".xlsx,.xlsm" hidden></div>
-    <div class="note" style="margin-top:14px">Update <b>revised trench dates</b> from the New Community Checklist. The <b>Model Start</b> (current) date becomes each community's Proj. Trench Date. You'll see a preview to confirm before anything is written.</div>
-    <div class="drop" id="dropChk"><b>Drop the New Community Checklist (.xlsm) here</b><div class="hint">or click to browse — preview matches before applying</div><input type="file" id="fileChk" accept=".xlsm,.xlsx" hidden></div>
-    <div id="clPreview"></div>
-    <div class="bar" style="margin-top:12px"><button class="btn mini ghost" id="gmBtn">Grouping migration — align Community Names…</button><span class="hint">One-off: gives each community's enclaves one shared Community Name so they cluster in the selector. Preview first; lands as drafts.</span></div>
-    <div id="gmPreview"></div>
-    <div class="bar" style="margin-top:12px"><button class="btn mini solid" id="pubAll">Publish all drafts (${draftN})</button><span class="hint">Makes every current draft live for viewers.</span></div>
-    <div class="log" id="log"></div>`;
-  const log=$("log"); const logln=(t,k)=>{ const d=document.createElement("div"); if(k)d.className=k; d.textContent=t; log.prepend(d); };
-  const dropX=$("dropXls"), fileX=$("fileXls");
-  dropX.onclick=()=>fileX.click();
-  ["dragover","dragenter"].forEach(ev=>dropX.addEventListener(ev,e=>{e.preventDefault();dropX.classList.add("hot");}));
-  ["dragleave","drop"].forEach(ev=>dropX.addEventListener(ev,e=>{e.preventDefault();dropX.classList.remove("hot");}));
-  dropX.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importXlsx(f,logln); });
-  fileX.onchange=()=>{ if(fileX.files[0]) importXlsx(fileX.files[0],logln); };
-  const dropC=$("dropChk"), fileC=$("fileChk");
-  dropC.onclick=()=>fileC.click();
-  ["dragover","dragenter"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.add("hot");}));
-  ["dragleave","drop"].forEach(ev=>dropC.addEventListener(ev,e=>{e.preventDefault();dropC.classList.remove("hot");}));
-  dropC.addEventListener("drop",e=>{ const f=[...(e.dataTransfer.files||[])].find(f=>/\.xls[xm]$/i.test(f.name)); if(f) importChecklist(f,logln); });
-  fileC.onchange=()=>{ if(fileC.files[0]) importChecklist(fileC.files[0],logln); };
-  if($("gmBtn")) $("gmBtn").onclick=()=>gmRender();
-  $("pubAll").onclick=()=>publishAllDrafts(logln);
-}
+/* ---------------- TEMPLATE EDITOR (editors + admins, maker side) ----------------
+   Edits a working copy of SCHEMA.SECTIONS; nothing changes for anyone until
+   Save template. Community data is never written from here:
+   - Remove marks a saved row/section `retired` (hidden where empty, kept where
+     filled — see the TEMPLATE notes at the top). Rows/sections added in this
+     unsaved session are simply dropped.
+   - Restore clears `retired`, which brings existing values straight back.
+   - New rows get fresh keys, so they can never collide with existing data.
+   Identity fields (Community Name, JDE, Project Name, Product Type) and the
+   auto-stamped Revision Date can be renamed but not removed, and the section
+   holding them can't be removed either. */
+const TPL_LOCKED = new Set([SCHEMA.IDENTITY.name, SCHEMA.IDENTITY.jde, SCHEMA.IDENTITY.project, SCHEMA.IDENTITY.product]);
+const TPL_KIND = { kv:"Fields", plans:"Plan table", grid:"Table", note:"Free text" };
+const rid = p => p + Math.random().toString(36).slice(2,10);
+function tplWork(){ if(!state.tpl){ state.tpl=clone(SCHEMA.SECTIONS); state.tplNew={}; } return state.tpl; }
+function tplDirty(){ return !!state.tpl && JSON.stringify(state.tpl)!==JSON.stringify(SCHEMA.SECTIONS); }
+function fieldLocked(f){ return !!f.readonly || TPL_LOCKED.has(f.k); }
+function secLocked(s){ return s.kind==="kv" && (s.fields||[]).some(f=>fieldLocked(f)); }
+function tplRowList(s){ return s.kind==="kv" ? s.fields : s.kind==="grid" ? s.rows : null; }
+const tplRid = r => r.k || ("p"+r.pos);
+function tplRowKey(s,r){ return s.id+"/"+tplRid(r); }
 
-/* ---- trench-date update from the New Community Checklist (preview → apply) ---- */
-function clDate(d){ return (d instanceof Date && !isNaN(d)) ? `${d.getMonth()+1}.${d.getDate()}.${String(d.getFullYear()%100).padStart(2,"0")}` : ""; }
-function parseChecklist(wb){
-  const ws=wb.Sheets["Summary"]; if(!ws) return {rows:[],unmatched:[]};
-  const aoa=XLSX.utils.sheet_to_json(ws,{header:1,cellDates:true,defval:null});
-  const hr=aoa.findIndex(r=>Array.isArray(r)&&r.some(c=>typeof c==="string"&&c.trim().toLowerCase()==="community"));
-  if(hr<0) return {rows:[],unmatched:[]};
-  const hdr=aoa[hr];
-  const ciComm=hdr.findIndex(c=>typeof c==="string"&&c.trim().toLowerCase()==="community");
-  const ciMs=hdr.findIndex(c=>typeof c==="string"&&c.trim().toLowerCase()==="model start"); // first exact = current
-  if(ciComm<0||ciMs<0) return {rows:[],unmatched:[]};
-  const list=[];
-  for(let r=hr+1;r<aoa.length;r++){ const row=aoa[r]||[]; let comm=row[ciComm], ms=row[ciMs];
-    if(typeof comm!=="string") continue; comm=comm.trim();
-    if(!comm || /hub$/i.test(comm)) continue;
-    if(!(ms instanceof Date) || ms.getFullYear()<2000) continue;   // skip blanks / 1899 epoch
-    list.push({comm, date:ms});
+/* how many communities hold data for a row/section (either the live or the draft version) */
+function tplUse(pred){ return state.items.filter(it=>[it.pub,it.draft].some(row=>row && pred(row.data||{}))).length; }
+function tplRowUse(s,r){
+  if(s.kind==="kv") return tplUse(d=>fval(d,r.k)!=="");
+  if(s.kind==="grid") return tplUse(d=>hasCells(typeof r.pos==="number" ? (Array.isArray(d[s.key])?d[s.key]:[])[r.pos] : (((d.gridx||{})[s.key])||{})[r.k]));
+  return 0;
+}
+const tplUseTxt = n => n ? `${n} sheet${n===1?"":"s"} filled` : `<span class="none">empty everywhere</span>`;
+const tplWhen = t => t ? new Date(t).toLocaleString([], {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : "";
+
+function renderTemplate(a){
+  const T=tplWork(); const dirty=tplDirty(); const meta=state.tplMeta||{};
+  const saved = meta.saved ? `Last saved ${esc(tplWhen(meta.updated_at))}${meta.updated_by?` by ${esc(meta.updated_by)}`:""}`
+                           : "Using the default layout — not saved yet";
+  const active=T.map((s,i)=>({s,i})).filter(x=>!x.s.retired);
+  const removed=T.map((s,i)=>({s,i})).filter(x=>x.s.retired);
+  a.innerHTML=`
+    <div class="note"><b>Template</b> sets the sections and rows every community sheet uses. Changes go live for everyone when you press <b>Save template</b>.
+      Removing a row or section never deletes data: it disappears only from sheets where it's empty, and sheets that already have a value keep it and still show it. Removed items can be restored.</div>
+    <div class="bar">
+      <button class="btn mini solid" id="tplSave" ${dirty&&!state.tplBusy?"":"disabled"}>${state.tplBusy?"Saving…":"Save template"}</button>
+      <button class="btn mini ghost" id="tplDiscard" ${dirty&&!state.tplBusy?"":"disabled"}>Discard changes</button>
+      <button class="btn mini ghost" id="tplAddSec">+ Add section</button>
+      ${dirty?`<span class="pill draft">Unsaved changes</span>`:""}
+      <span class="hint">${saved}</span>
+    </div>
+    <div class="tpl-list" id="tplList">
+      ${active.map((x,n)=>tplSecHTML(x.s, x.i, n>0, n<active.length-1)).join("")}
+      ${removed.length?`<details class="panel tpl-removed"><summary>Removed sections (${removed.length})</summary>
+        <table class="tpl-t">${removed.map(x=>`<tr><td class="tpl-lbl">${esc(x.s.title)} <span class="tpl-kind">${TPL_KIND[x.s.kind]||""}</span></td>
+          <td class="tpl-use">${tplUseTxt(tplUse(d=>secHasData(x.s,d)))}</td>
+          <td class="tpl-acts"><button class="tbtn" data-act="srestore" data-s="${x.i}">Restore</button></td></tr>`).join("")}</table></details>`:""}
+    </div>`;
+  $("tplSave").onclick=tplSave;
+  $("tplDiscard").onclick=tplDiscard;
+  $("tplAddSec").onclick=()=>tplAct("sadd");
+  $("tplList").addEventListener("click",e=>{ const b=e.target.closest("[data-act]"); if(!b||b.disabled||state.tplBusy) return;
+    tplAct(b.dataset.act, b.dataset.s!=null?+b.dataset.s:null, b.dataset.r!=null?+b.dataset.r:null); });
+}
+function tplSecHTML(s, si, canUp, canDown){
+  const locked=secLocked(s);
+  let h=`<div class="panel tpl-sec"><div class="sec"><span>${esc(s.title)||'<i>(untitled)</i>'} <span class="tpl-kind">${TPL_KIND[s.kind]||""}</span>${state.tplNew[s.id]?' <span class="tpl-kind">new</span>':""}</span>
+    <span class="sec-right">
+      <button data-act="sup" data-s="${si}" ${canUp?"":"disabled"} title="Move section up" aria-label="Move section up">&#8593;</button>
+      <button data-act="sdown" data-s="${si}" ${canDown?"":"disabled"} title="Move section down" aria-label="Move section down">&#8595;</button>
+      <button data-act="sren" data-s="${si}">Rename</button>
+      ${locked?`<button disabled title="Holds the community's identity fields, so it can't be removed">Remove</button>`:`<button data-act="sdel" data-s="${si}">Remove</button>`}
+    </span></div>`;
+  if(s.kind==="plans") h+=`<div class="tpl-info">Plan rows are added on each sheet. Columns: ${SCHEMA.PLAN_COLS.map(esc).join(" · ")}</div>`;
+  if(s.kind==="note")  h+=`<div class="tpl-info">A free-text notes box on each sheet.</div>`;
+  if(s.kind==="grid")  h+=`<div class="tpl-info">Columns: ${s.columns.map(esc).join(" · ")}. The rows below are offered on every sheet; each sheet can also add its own.</div>`;
+  const list=tplRowList(s);
+  if(list){
+    const act=list.map((r,ri)=>({r,ri})).filter(x=>!x.r.retired);
+    const rem=list.map((r,ri)=>({r,ri})).filter(x=>x.r.retired);
+    h+=`<table class="tpl-t">${act.map((x,n)=>{ const r=x.r; const lk=s.kind==="kv"&&fieldLocked(r);
+      return `<tr><td class="tpl-lbl">${esc(r.label)||'<span class="none">(no label)</span>'}${
+          r.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${
+          state.tplNew[tplRowKey(s,r)]?'<span class="autotag tpl-new">new</span>':""}</td>
+        <td class="tpl-use">${tplUseTxt(tplRowUse(s,r))}</td>
+        <td class="tpl-acts">
+          <button class="tbtn" data-act="rup" data-s="${si}" data-r="${x.ri}" ${n>0?"":"disabled"} title="Move up" aria-label="Move up">&#8593;</button>
+          <button class="tbtn" data-act="rdown" data-s="${si}" data-r="${x.ri}" ${n<act.length-1?"":"disabled"} title="Move down" aria-label="Move down">&#8595;</button>
+          <button class="tbtn" data-act="rren" data-s="${si}" data-r="${x.ri}">Rename</button>
+          ${lk?`<button class="tbtn" disabled title="Required — can be renamed but not removed" aria-label="Required row">&times;</button>`
+              :`<button class="tbtn del" data-act="rdel" data-s="${si}" data-r="${x.ri}" title="Remove row" aria-label="Remove ${esc(r.label)}">&times;</button>`}
+        </td></tr>`; }).join("")}
+      ${!act.length?`<tr><td colspan="3"><span class="none">No template rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</span></td></tr>`:""}
+      <tr class="tpl-addrow"><td colspan="3"><button class="tbtn add" data-act="radd" data-s="${si}">+ Add row</button></td></tr></table>`;
+    if(rem.length) h+=`<details class="tpl-removed-rows"><summary>Removed rows (${rem.length})</summary><table class="tpl-t">${rem.map(x=>
+      `<tr><td class="tpl-lbl">${esc(x.r.label)}</td><td class="tpl-use">${tplUseTxt(tplRowUse(s,x.r))}</td>
+        <td class="tpl-acts"><button class="tbtn" data-act="rrestore" data-s="${si}" data-r="${x.ri}">Restore</button></td></tr>`).join("")}</table></details>`;
   }
-  const rows=[], unmatched=[];
-  list.forEach(x=>{ const dateStr=clDate(x.date);
-    const matches=state.items.filter(it=>lc(it.name).startsWith(lc(x.comm)))
-      .map(it=>{ const base=it.draft||it.pub; return {id:it.id, name:it.name, cur:(base&&base.data&&base.data.f&&base.data.f.trench_date)||""}; });
-    if(matches.length) rows.push({comm:x.comm, dateStr, matches}); else unmatched.push({comm:x.comm, dateStr});
-  });
-  return {rows,unmatched};
+  return h+`</div>`;
 }
-let _clPv=null, _clLog=null;
-async function importChecklist(file, logln){
-  if(!window.XLSX){ logln("Spreadsheet library not loaded.","err"); return; }
-  logln("Reading "+file.name+"…");
-  let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellDates:true}); }catch(e){ logln("Couldn't read: "+(e.message||e),"err"); return; }
-  const pv=parseChecklist(wb); pv.unmatched.forEach(u=>u.assign=[]);
-  _clPv=pv; _clLog=logln;
-  renderChecklistPreview();
-  logln(`Checklist parsed: ${pv.rows.length} matched, ${pv.unmatched.length} unmatched. Assign any unmatched, then Apply.`,"ok");
+/* swap arr[i] with the nearest non-retired neighbour in direction dir */
+function tplMove(arr, i, dir){
+  let j=i+dir; while(j>=0 && j<arr.length && arr[j].retired) j+=dir;
+  if(j<0 || j>=arr.length) return;
+  const t=arr[i]; arr[i]=arr[j]; arr[j]=t;
 }
-function clApplyList(){
-  if(!_clPv) return [];
-  // keyed by id so one CIS matched by several checklist rows yields one payload
-  // (duplicate community_ids in an upsert batch fail the whole batch); last wins
-  const out=new Map();
-  _clPv.rows.forEach(r=>r.matches.forEach(m=>out.set(m.id,{id:m.id, dateStr:r.dateStr})));
-  _clPv.unmatched.forEach(u=>(u.assign||[]).forEach(id=>out.set(id,{id, dateStr:u.dateStr})));
-  return [...out.values()];
-}
-function renderChecklistPreview(){
-  const el=$("clPreview"); if(!el||!_clPv) return; const pv=_clPv; const apply=clApplyList();
-  const opts=state.items.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)))
-    .map(it=>`<option value="${it.id}">${esc(it.name)}</option>`).join("");
-  let h=`<div class="panel" style="margin-top:12px"><div class="sec"><span>Trench-date preview — ${apply.length} CIS to update</span>${apply.length?`<button class="btn mini solid" id="clApplyBtn">Apply to ${apply.length} CIS as drafts</button>`:""}</div>`;
-  if(pv.rows.length){ h+=`<table><tr><th>Checklist community</th><th>New trench (Model Start)</th><th>CIS updated</th></tr>`+
-    pv.rows.map(r=>`<tr><td>${esc(r.comm)}</td><td>${esc(r.dateStr)}</td><td>${r.matches.map(m=>`${esc(m.name)}${m.cur?` <span class="hint">(was ${esc(m.cur)})</span>`:""}`).join("<br>")}</td></tr>`).join("")+`</table>`; }
-  if(pv.unmatched.length){ h+=`<div class="sec"><span>Unmatched — assign a CIS to include it (${pv.unmatched.length})</span></div>
-    <table><tr><th>Checklist community</th><th>New trench</th><th>Assign to CIS</th></tr>`+
-    pv.unmatched.map((u,ui)=>`<tr><td>${esc(u.comm)}</td><td>${esc(u.dateStr)}</td><td>${
-      (u.assign||[]).map(id=>`<span class="pill cis" style="margin:2px 4px 2px 0">${esc((itemById(id)||{}).name||"")} <a href="#" class="unassign" data-un="${ui}|${id}">×</a></span>`).join("")
-    }<select data-assign="${ui}"><option value="">+ assign CIS…</option>${opts}</select></td></tr>`).join("")+`</table>`; }
-  h+=`</div>`;
-  el.innerHTML=h;
-  el.querySelectorAll("[data-assign]").forEach(s=>s.onchange=()=>{ const ui=+s.dataset.assign, id=s.value;
-    if(id){ const u=_clPv.unmatched[ui]; u.assign=u.assign||[]; if(!u.assign.includes(id)) u.assign.push(id); renderChecklistPreview(); } });
-  el.querySelectorAll(".unassign").forEach(b=>b.onclick=e=>{ e.preventDefault(); const [ui,id]=b.dataset.un.split("|");
-    const u=_clPv.unmatched[+ui]; u.assign=(u.assign||[]).filter(x=>x!==id); renderChecklistPreview(); });
-  if($("clApplyBtn")) $("clApplyBtn").onclick=()=>applyChecklist();
-}
-async function applyChecklist(){
-  const list=clApplyList(); if(!list.length) return;
-  if(!(await uiConfirm(`Apply revised trench dates to ${list.length} CIS as drafts? Review and Publish afterward.`,{title:"Apply trench dates",okText:"Apply"}))) return;
-  const payloads=list.map(a=>{ const it=itemById(a.id); const base=it.draft||it.pub;
-    const data=JSON.parse(JSON.stringify(base.data||{})); data.f=data.f||{}; data.f.trench_date=a.dateStr;
-    return { community_id:it.id, division:"orlando", status:"draft", source:base.source||"CIS",
-      name:base.name||null, jde:base.jde||null, project_name:base.project_name||null, hub:base.hub||null,
-      active:(it.active!==false),   // an inserted draft would otherwise default true and un-hide the community on publish
-      needs_review:true, data, updated_at:new Date().toISOString(), updated_by:state.email }; });
-  let ok=0;
-  for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
-    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"});
-    if(error){ if(_clLog) _clLog("Batch failed: "+error.message,"err"); } else ok+=batch.length; }
-  if($("clPreview")) $("clPreview").innerHTML=`<div class="note ok" style="margin-top:12px">Updated ${ok} CIS as drafts. Use "Publish all drafts" to make them live.</div>`;
-  if(_clLog) _clLog(`Applied trench dates to ${ok} CIS (drafts).`,"ok");
-  _clPv=null; await loadAll(); updateCounts();
-}
-
-
-/* Some sheets cram elevations + New Plan into the Plan Name cell, e.g.
-   "Annapolis - (30' x 65') H, J, K No", leaving the Elevations/New Plan columns
-   blank. When those columns are empty, split the trailing text out. */
-function splitPlanRow(a,b,c,d,e){
-  const S=x=>x==null?"":String(x).trim();
-  a=S(a); b=S(b); c=S(c); d=S(d); e=S(e);
-  if(c || d){ return [a,b,c,d,e]; }           // already separated — leave as-is
-  const paren=b.lastIndexOf(")");
-  if(paren<0 || paren===b.length-1) return [a,b,c,d,e];
-  const name=b.slice(0,paren+1).trim();
-  let rest=b.slice(paren+1).trim();
-  if(!rest) return [a,name,c,d,e];
-  let elev=rest, np="";
-  const m=rest.match(/\b(Yes|No)\b.*$/i);     // trailing New Plan token
-  if(m){ np=rest.slice(m.index).trim(); elev=rest.slice(0,m.index).replace(/[,\s]+$/,"").trim(); }
-  return [a,name,elev,np,e];
-}
-
-/* ---- xlsx import: one community per sheet ---- */
-function parseSheet(aoa){
-  const HDR={ "project information":"proj","floor plans":"plans","model and sales office information":"model",
-    "home construction specifications":"hcs","community specific specifications":"cs","utility providers":"up",
-    "notes (special circumstances)":"note","community map":"map" };
-  const idx=SCHEMA.labelIndex(); const norm=SCHEMA.norm;
-  const gridSec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"); const gridLabels=(gridSec&&gridSec.rowLabels)||[];
-  const data={ f:{}, plans:[], model:[], note:"", extra:{} }; let cur=null; const noteLines=[]; let meta="";
-  for(const rrow of aoa){
-    const a=(rrow[0]==null?"":String(rrow[0])).trim();
-    const b=(rrow[1]==null?"":String(rrow[1])).trim();
-    if(!a && !b) continue;
-    if(a.indexOf("←")===0) continue;
-    if(/^created by/i.test(a) || /^source:/i.test(a)){ meta=a; continue; }
-    const h=HDR[a.toLowerCase()]; if(h!==undefined){ cur=h; continue; }
-    if(/^plan number$/i.test(a)) continue;               // plans header row
-    if(cur==="plans"){
-      if(/^final plan offering/i.test(a)) continue;
-      if(a||b) data.plans.push(splitPlanRow(a, b, rrow[2], rrow[3], rrow[4]));
-      continue;
-    }
-    if(cur==="model"){
-      if(/^model$/i.test(a)) continue;                   // column-header row
-      const cells=[b, (rrow[2]==null?"":String(rrow[2]).trim()), (rrow[3]==null?"":String(rrow[3]).trim()), (rrow[4]==null?"":String(rrow[4]).trim())];
-      const gi=gridLabels.findIndex(l=>l.toLowerCase()===a.toLowerCase());
-      if(gi>=0){ data.model[gi]=cells; }
-      else if(a){                                        // custom (user-added) row — preserve it on re-import
-        const P=gridLabels.length;
-        data.model_labels=data.model_labels||[];
-        while(data.model.length<P) data.model.push([]);
-        data.model.push(cells);
-        data.model_labels.push(a);
-      }
-      continue;
-    }
-    if(cur==="note"){ if(a) noteLines.push(a); continue; }
-    if(cur==="map") continue;
-    if(b!==""){ const m=idx[norm(a)]; if(m) data.f[m.key]=b; else { (data.extra[cur||"proj"]=data.extra[cur||"proj"]||[]).push([a,b]); } }
+async function tplAct(act, si, ri){
+  const T=tplWork();
+  if(act==="sadd"){
+    const v=await uiPrompt("Section title",{title:"Add section",okText:"Add",placeholder:"e.g. HOA Requirements"});
+    if(!v) return;
+    if(T.some(s=>!s.retired && lc(s.title).trim()===lc(v))){ uiAlert(`There's already a section called "${v}".`,"Add section"); return; }
+    const s={ id:rid("s_"), title:v, kind:"kv", fields:[] };
+    // new sections go just above Notes when Notes is the last active section
+    let at=T.length; for(let i=T.length-1;i>=0;i--){ if(T[i].retired) continue; if(T[i].kind==="note") at=i; break; }
+    T.splice(at,0,s); state.tplNew[s.id]=1;
+    return tplRepaint();
   }
-  data.note=noteLines.join("\n"); if(meta) data.meta=meta;
-  const I=SCHEMA.IDENTITY, f=data.f;
-  return { data, name:f[I.name]||"", jde:f[I.jde]||"", project:f[I.project]||"", product:f[I.product]||"" };
+  const s=T[si]; if(!s) return;
+  const list=tplRowList(s);
+  if(act==="sup"||act==="sdown") tplMove(T, si, act==="sup"?-1:1);
+  else if(act==="sren"){
+    const v=await uiPrompt("Section title",{title:"Rename section",okText:"Rename",value:s.title}); if(!v) return; s.title=v; }
+  else if(act==="sdel"){
+    if(secLocked(s)) return;
+    if(state.tplNew[s.id]){ T.splice(si,1); delete state.tplNew[s.id]; return tplRepaint(); }
+    const n=tplUse(d=>secHasData(s,d));
+    if(!(await uiConfirm(`Remove "${s.title}" from the template? ${n
+        ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} data in it — ${n===1?"that sheet keeps its data and still shows":"those sheets keep their data and still show"} the section.`
+        : "No sheet has data in it."} You can restore it later.`,{title:"Remove section",okText:"Remove"}))) return;
+    s.retired=true;
+  }
+  else if(act==="srestore") delete s.retired;
+  else if(!list) return;
+  else if(act==="radd"){
+    const v=await uiPrompt(`New row in "${s.title}"`,{title:"Add row",okText:"Add",placeholder:s.kind==="grid"?"e.g. Model Home Plan 4":"e.g. Fence Type"});
+    if(!v) return;
+    const hit=list.find(r=>lc(r.label).trim()===lc(v));
+    if(hit && !hit.retired){ uiAlert(`"${s.title}" already has a row called "${hit.label}".`,"Add row"); return; }
+    if(hit && hit.retired){
+      if(await uiConfirm(`"${hit.label}" was removed from this section earlier. Restore it instead? Any values sheets already have come back with it.`,{title:"Restore row",okText:"Restore"})) delete hit.retired;
+      return tplRepaint();
+    }
+    const r={ k:rid(s.kind==="kv"?"c_":"r_"), label:v };
+    list.push(r); state.tplNew[tplRowKey(s,r)]=1;
+  }
+  else {
+    const r=list[ri]; if(!r) return;
+    if(act==="rup"||act==="rdown") tplMove(list, ri, act==="rup"?-1:1);
+    else if(act==="rren"){
+      const v=await uiPrompt("Row label",{title:"Rename row",okText:"Rename",value:r.label}); if(!v) return;
+      if(list.some(x=>x!==r && !x.retired && lc(x.label).trim()===lc(v))){ uiAlert(`"${s.title}" already has a row called "${v}".`,"Rename row"); return; }
+      r.label=v;
+    }
+    else if(act==="rdel"){
+      if(s.kind==="kv" && fieldLocked(r)) return;
+      const key=tplRowKey(s,r);
+      if(state.tplNew[key]){ list.splice(ri,1); delete state.tplNew[key]; return tplRepaint(); }
+      const n=tplRowUse(s,r);
+      if(!(await uiConfirm(`Remove "${r.label}" from ${s.title}? ${n
+          ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} a value — ${n===1?"that sheet keeps it and still shows":"those sheets keep it and still show"} the row.`
+          : "No sheet has a value in it."} You can restore it later.`,{title:"Remove row",okText:"Remove"}))) return;
+      r.retired=true;
+    }
+    else if(act==="rrestore") delete r.retired;
+  }
+  tplRepaint();
 }
-async function importXlsx(file, logln){
-  if(!window.XLSX){ logln("Spreadsheet library not loaded.","err"); return; }
-  logln("Reading "+file.name+"…");
-  let wb; try{ wb=XLSX.read(await file.arrayBuffer(),{type:"array"}); }catch(e){ logln("Couldn't read workbook: "+(e.message||e),"err"); return; }
-  const skip=new Set(["home","to do"]);
-  const byJde=new Map(), byName=new Map();
-  state.items.forEach(it=>{ if(it.jde) byJde.set(String(it.jde).trim(),it.id); if(it.name) byName.set(lc(it.name),it.id); });
-  // keyed by community_id: two sheets resolving to the same CIS would put duplicate
-  // community_ids in one upsert batch, which fails the whole batch. Last sheet wins.
-  const byCid=new Map();
-  wb.SheetNames.forEach(sn=>{ if(skip.has(sn.trim().toLowerCase())) return;
-    const aoa=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,blankrows:false,defval:null});
-    if(!aoa.length) return;
-    const p=parseSheet(aoa);
-    const nm=p.name||String(aoa[0]&&aoa[0][0]||sn).trim();
-    const cid=(p.jde&&byJde.get(String(p.jde).trim()))||(nm&&byName.get(lc(nm)))||uid();
-    const prev=byCid.get(cid);
-    if(prev) logln(`Duplicate community "${nm||sn}" — sheet "${prev.sheet}" dropped, "${sn}" wins.`,"warn");
-    // carry an existing community's active flag: an inserted draft would otherwise
-    // default to active and un-hide an inactive community the next time it publishes
-    const ex=itemById(cid);
-    byCid.set(cid,{ sheet:sn, payload:{
-      community_id:cid, division:"orlando", status:"draft", source:"CIS",
-      name:nm||sn, jde:p.jde||null, project_name:p.project||null, hub:p.product||null,
-      active:(ex? ex.active!==false : true),
-      needs_review:true, data:p.data, updated_at:new Date().toISOString(), updated_by:state.email } });
+function tplRepaint(){ if(state.view==="template") renderTemplate($("viewArea")); updateCounts(); }
+async function tplDiscard(){
+  if(!tplDirty()) return;
+  if(!(await uiConfirm("Discard your unsaved template changes?",{title:"Discard changes",okText:"Discard",danger:true}))) return;
+  state.tpl=null; state.tplNew={}; tplRepaint();
+}
+async function tplSave(){
+  const T=state.tpl; if(!T || !tplDirty() || state.tplBusy) return;
+  if(DEMO||!sb){ uiAlert("Not connected to the database.","Save template"); return; }
+  if(T.some(s=>!String(s.title||"").trim()) || T.some(s=>(tplRowList(s)||[]).some(r=>!String(r.label||"").trim()))){
+    uiAlert("Every section and row needs a label before saving.","Save template"); return; }
+  const sum=tplChangeSummary(SCHEMA.SECTIONS, T);
+  if(!(await uiConfirm(`Save the template? It applies to every community sheet right away.${sum?` Changes: ${sum}.`:""}`,{title:"Save template",okText:"Save template"}))) return;
+  state.tplBusy=true; tplRepaint();
+  try{
+    // someone else saved since this copy was loaded? don't silently overwrite them
+    const { data:cur, error:e0 }=await sb.from("cdb_template").select("updated_at,updated_by").eq("id",TPL_ID).maybeSingle();
+    if(e0) throw e0;
+    const theirs=cur?cur.updated_at:null, mine=(state.tplMeta&&state.tplMeta.updated_at)||null;
+    if(theirs && theirs!==mine){
+      if(!(await uiConfirm(`${cur.updated_by||"Someone"} saved the template (${tplWhen(theirs)}) after you loaded it. Saving replaces their version with yours. Refresh the page first if you'd rather start from theirs.`,
+          {title:"Template changed",okText:"Save mine anyway",danger:true}))) return;
+    }
+    const clean=normTemplate(T); const now=new Date().toISOString();
+    const { data:saved, error }=await sb.from("cdb_template")
+      .upsert({ id:TPL_ID, sections:clean, updated_at:now, updated_by:state.email },{onConflict:"id"}).select().maybeSingle();
+    if(error) throw error;
+    const { error:e2 }=await sb.from("cdb_template_revisions").insert({ template_id:TPL_ID, sections:clean, saved_at:now, saved_by:state.email });
+    if(e2) console.warn("template revision insert failed",e2);
+    SCHEMA.SECTIONS=clean; state.tpl=null; state.tplNew={};
+    state.tplMeta={ updated_at:(saved&&saved.updated_at)||now, updated_by:state.email, saved:true };
+  }catch(e){
+    const m=(e&&e.message)||String(e);
+    uiAlert("Couldn't save the template: "+m+(/relation|does not exist|schema cache|cdb_template/i.test(m)?" — run add_template.sql in Supabase first.":""),"Save failed");
+  }finally{ state.tplBusy=false; tplRepaint(); }
+}
+/* short human summary of what changed, for the save confirmation */
+function tplChangeSummary(before, after){
+  const B=new Map(before.map(s=>[s.id,s]));
+  let addS=0, remS=0, addR=0, remR=0, ren=0, moved=false;
+  const both=new Set(after.filter(s=>!s.retired && B.has(s.id) && !B.get(s.id).retired).map(s=>s.id));
+  if(before.filter(s=>both.has(s.id)).map(s=>s.id).join()!==after.filter(s=>both.has(s.id)).map(s=>s.id).join()) moved=true;
+  after.forEach(s=>{ const o=B.get(s.id);
+    if(!o){ if(!s.retired) addS++; return; }
+    if(!o.retired && s.retired) remS++;
+    if(o.retired && !s.retired) addS++;
+    if(o.title!==s.title) ren++;
+    const ol=tplRowList(o)||[], nl=tplRowList(s)||[];
+    const OB=new Map(ol.map(r=>[tplRid(r),r]));
+    nl.forEach(r=>{ const x=OB.get(tplRid(r));
+      if(!x){ if(!r.retired) addR++; return; }
+      if(!x.retired && r.retired) remR++;
+      if(x.retired && !r.retired) addR++;
+      if(x.label!==r.label) ren++; });
+    const was=ol.filter(r=>!r.retired).map(tplRid).filter(k=>nl.some(r=>!r.retired&&tplRid(r)===k)).join(",");
+    const now=nl.filter(r=>!r.retired && OB.has(tplRid(r)) && !OB.get(tplRid(r)).retired).map(tplRid).join(",");
+    if(was!==now) moved=true;
   });
-  const payloads=[...byCid.values()].map(x=>x.payload), n=payloads.length;
-  if(!payloads.length){ logln("No community sheets found.","warn"); return; }
-  let ok=0;
-  for(let i=0;i<payloads.length;i+=80){ const batch=payloads.slice(i,i+80);
-    const { error }=await sb.from("cdb_cis").upsert(batch,{onConflict:"community_id,status"});
-    if(error){ logln("Batch failed: "+error.message,"err"); } else ok+=batch.length; }
-  logln(`Imported ${ok} of ${n} communities as drafts. Review, then Publish (or "Publish all drafts").`,"ok");
-  await loadAll(); render();
+  const p=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
+  const parts=[];
+  if(addS) parts.push(p(addS,"section")+" added");
+  if(remS) parts.push(p(remS,"section")+" removed");
+  if(addR) parts.push(p(addR,"row")+" added");
+  if(remR) parts.push(p(remR,"row")+" removed");
+  if(ren)  parts.push(p(ren,"rename"));
+  if(moved) parts.push("reordered");
+  return parts.join(", ");
 }
-async function publishAllDrafts(logln){
+
+/* ---------------- PUBLISH ALL DRAFTS (Communities toolbar, maker side) ---------------- */
+async function publishAllDrafts(){
   const ids=state.items.filter(it=>it.hasDraft).map(it=>it.id);
-  if(!ids.length){ if(logln)logln("No drafts to publish.","warn"); return; }
+  if(!ids.length){ uiAlert("There are no drafts to publish.","Publish all drafts"); return; }
   if(!(await uiConfirm(`Publish all ${ids.length} drafts? Each becomes the live version for viewers.`,{title:"Publish all drafts",okText:"Publish all"}))) return;
   let ok=0; const queued=[];
   for(const id of ids){
@@ -1815,8 +1914,8 @@ async function publishAllDrafts(logln){
   }
   // oldest first so the panel ends up newest-at-top, same as single publishes
   queued.reverse().forEach(q=>pubqAdd(q.id, q.nm, q.jde));
-  if(logln) logln(`Published ${ok} of ${ids.length} drafts.`, ok===ids.length?"ok":"warn");
   await loadAll(); render();
+  uiAlert(ok===ids.length?`Published ${ok} draft${ok===1?"":"s"}.`:`Published ${ok} of ${ids.length} drafts — the rest failed; check them individually.`,"Publish all drafts");
 }
 
 /* ---------------- ADMIN: reset link + roles ---------------- */

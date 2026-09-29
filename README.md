@@ -8,8 +8,9 @@ Two sides, one app:
 
 - **Viewer** — any signed-in `@lennar.com` user sees only *published* community info.
 - **Maker** (editors/admins) — draft with save-and-resume, publish to live, edit already-published
-  sheets (which starts a fresh draft), plus **Gaps** and **Add / import** tabs. Toggle with the
-  **Viewer / Maker** switch at the top right.
+  sheets (which starts a fresh draft), **Publish all drafts** on the Communities toolbar, and the
+  **Gaps** and **Template** tabs. Toggle with the **Viewer / Maker** switch at
+  the top right.
 
 ## One-time setup
 
@@ -35,17 +36,30 @@ Uploads are downsampled in the browser (longest edge `IMAGE_MAX_EDGE`, re-encode
 `IMAGE_QUALITY` — see `config.js`) before going to the private `cdb-images` bucket, to stay crisp
 on a 1080p display while conserving free-tier storage.
 
-## PDF import
+## Template editor
 
-**Add / import** reads a CIS PDF's text layer and best-effort pre-fills a draft, flagged **needs
-review**. Always verify every field before publishing — extraction is approximate.
+**Template** (editors and admins, Maker side) edits the sections and rows every CIS sheet uses: add, rename,
+reorder and remove sections and rows. Nothing changes for anyone until **Save template**.
+Requires `add_template.sql` (run once); until the first save, the default layout in `config.js` is used.
+
+Template changes never touch community data:
+
+- **Removing** a row or section hides it only on sheets where it's empty. Sheets that already have a
+  value keep it and still show (and export) it. Removed items are listed under **Removed rows /
+  sections** and can be **restored**, which brings their values straight back.
+- **New** rows get fresh keys, so they never collide with existing data. New Model-table rows store
+  their cells separately (`data.gridx`), so the original rows and each sheet's own custom rows never shift.
+- Identity fields (Community Name, JDE, Project Name, Product Type) and the auto Revision Date can be
+  renamed but not removed.
+- Every save writes a snapshot to `cdb_template_revisions`. Saving over someone else's newer save asks first.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `index.html` | App shell + login card |
-| `config.js` | Supabase keys, image settings, and the **CIS field schema** (one source of truth) |
+| `config.js` | Supabase keys, image settings, and the **default** CIS template |
 | `styles.css` | Design language shared with the other portals |
-| `app.js` | Auth, data loading, viewer, maker, notes, gaps, images, PDF import, admin |
+| `app.js` | Auth, data loading, template, viewer, maker, gaps, images, template editor, admin |
+| `add_template.sql` | Editable template tables (`cdb_template`, `cdb_template_revisions`) |
 | `supabase_setup.sql` | Backend: tables, RLS, publish/draft RPCs, Storage bucket, user admin |
