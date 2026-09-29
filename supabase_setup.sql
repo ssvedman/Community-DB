@@ -1,8 +1,3 @@
--- !! SECURITY: cdb_admin_add_or_reset below is the UNGUARDED base definition.
--- !! After running this file you MUST run harden_admin_no_peer_reset.sql, which
--- !! re-defines it (and the delete/reset issuers) so an admin cannot reset or
--- !! delete ANOTHER admin. Re-running this file alone silently reopens that hole.
-
 /* ==========================================================================
    Community-DB — Supabase backend (schema + RLS + publish workflow + storage)
    Shares the existing Supabase project with Takeoff Flow and the Vendor Portal.
@@ -123,8 +118,13 @@ alter table public.cdb_notes         enable row level security;
 
 -- roles: a user can read their own row; admins read all; only admins write
 drop policy if exists cdb_roles_read on public.cdb_app_roles;
-create policy cdb_roles_read on public.cdb_app_roles for select
-  using (email = public.cdb_email() or public.cdb_is_admin());
+-- authenticated + @lennar only: a PUBLIC-scoped policy collapsed to (email='')
+-- for an anon request, a fail-open idiom. The constraint makes a blank-email
+-- role row impossible.
+create policy cdb_roles_read on public.cdb_app_roles for select to authenticated
+  using ( public.cdb_is_lennar() and (email = public.cdb_email() or public.cdb_is_admin()) );
+alter table public.cdb_app_roles drop constraint if exists cdb_app_roles_email_nonblank;
+alter table public.cdb_app_roles add  constraint cdb_app_roles_email_nonblank check (email <> '');
 drop policy if exists cdb_roles_write on public.cdb_app_roles;
 create policy cdb_roles_write on public.cdb_app_roles for all
   using (public.cdb_is_admin()) with check (public.cdb_is_admin());
@@ -270,87 +270,75 @@ create table if not exists public.cdb_reset_tokens (
 );
 alter table public.cdb_reset_tokens enable row level security;  -- no direct client access
 
-create or replace function public.cdb_admin_add_or_reset(target_email text)
-returns jsonb language plpgsql security definer set search_path = public, auth, extensions as $$
-declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; begin
-  if not public.cdb_is_admin() then
-    return jsonb_build_object('ok', false, 'error', 'Not authorized.');
-  end if;
-  if v_email not like '%@lennar.com' then
-    return jsonb_build_object('ok', false, 'error', 'Email must be @lennar.com.');
-  end if;
+-- Shared helper: is this address an admin of ANY app in the suite? auth.users
+-- is shared, so the guards below use it to stop cross-app admin takeover.
+-- Canonical copy: takeoff-flow/harden_reset_tokens_poolA.sql (identical body).
+-- NOTE: references app_roles / tf_app_roles, which belong to the other apps in
+-- this shared project.
+create or replace function public.is_admin_email(p_email text) returns boolean
+ language sql stable security definer set search_path to '' as $$
+ select exists(select 1 from public.app_roles     where lower(email)=lower(p_email) and role='admin')
+     or exists(select 1 from public.tf_app_roles  where lower(email)=lower(p_email) and role='admin')
+     or exists(select 1 from public.cdb_app_roles where lower(email)=lower(p_email) and role='admin') $$;
+revoke all on function public.is_admin_email(text) from public, anon, authenticated;
 
+-- Issuer. Bodies of both reset functions match the live database
+-- (pg_get_functiondef, 2026-09-29). This is the ONLY repo file that defines them.
+--   * @lennar.com only; an admin may not reset another admin (self-reset ok)
+--   * new users get '' (not NULL) token columns — GoTrue requires it
+--   * issuing a link burns any outstanding one; only the SHA-256 hash is stored
+create or replace function public.cdb_admin_add_or_reset(target_email text)
+ returns jsonb language plpgsql security definer set search_path to 'public','auth','extensions' as $function$
+declare v_email text := lower(trim(target_email)); v_uid uuid; v_token text; begin
+  if not public.cdb_is_admin() then return jsonb_build_object('ok', false, 'error', 'Not authorized.'); end if;
+  if v_email not like '%@lennar.com' then return jsonb_build_object('ok', false, 'error', 'Email must be @lennar.com.'); end if;
+  if public.is_admin_email(v_email) and v_email <> lower(public.cdb_email()) then
+    return jsonb_build_object('ok', false, 'error', 'Cannot issue a reset for another admin.'); end if;
   select id into v_uid from auth.users where lower(email) = v_email;
   if v_uid is null then
     v_uid := gen_random_uuid();
-    insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
-                            email_confirmed_at, created_at, updated_at,
-                            raw_app_meta_data, raw_user_meta_data,
-                            confirmation_token, recovery_token, email_change,
-                            email_change_token_new, email_change_token_current,
-                            phone_change, phone_change_token, reauthentication_token)
-    values (v_uid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-            v_email, crypt(gen_random_uuid()::text, gen_salt('bf')),
-            now(), now(), now(),
-            '{"provider":"email","providers":["email"]}', '{}',
-            '', '', '', '', '', '', '', '');   -- GoTrue requires these to be '' (not NULL)
+    insert into auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at,
+      raw_app_meta_data, raw_user_meta_data, confirmation_token, recovery_token, email_change, email_change_token_new,
+      email_change_token_current, phone_change, phone_change_token, reauthentication_token)
+    values (v_uid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', v_email,
+      crypt(gen_random_uuid()::text, gen_salt('bf')), now(), now(), now(),
+      '{"provider":"email","providers":["email"]}', '{}', '', '', '', '', '', '', '', '');
   end if;
-
-  insert into public.cdb_app_roles (email, role)
-  values (v_email, 'viewer') on conflict (email) do nothing;
-
-  -- issuing a link invalidates any outstanding one for this address
+  insert into public.cdb_app_roles (email, role) values (v_email, 'viewer') on conflict (email) do nothing;
   update public.cdb_reset_tokens set used_at = now() where email = v_email and used_at is null;
-
-  -- store only the hash; the plaintext is returned once, to the admin, and never persisted
   v_token := encode(gen_random_bytes(24), 'hex');
-  insert into public.cdb_reset_tokens (token, email)
-  values (encode(digest(v_token, 'sha256'), 'hex'), v_email);
+  insert into public.cdb_reset_tokens (token, email) values (encode(digest(v_token, 'sha256'), 'hex'), v_email);
   return jsonb_build_object('ok', true, 'token', v_token, 'email', v_email);
-end $$;
+end $function$;
 
+-- Redeemer. Refuses admin accounts (reset those at the DB level), burns the
+-- token atomically, confirms the email, and logs out other sessions (::text on
+-- both sides: refresh_tokens.user_id is varchar, sessions.user_id is uuid).
+-- Stays executable by anon: redemption runs before sign-in.
 create or replace function public.cdb_redeem_reset_token(p_token text, p_new_password text)
-returns jsonb language plpgsql security definer set search_path = public, auth, extensions as $$
+ returns jsonb language plpgsql security definer set search_path to 'public','auth','extensions' as $function$
 declare v_email text; v_created timestamptz; v_used timestamptz;
         v_hash text := encode(digest(coalesce(p_token,''), 'sha256'), 'hex'); begin
   if length(coalesce(p_new_password,'')) < 8 then
-    return jsonb_build_object('ok', false, 'error', 'Password must be at least 8 characters.');
-  end if;
-  select email, created_at, used_at into v_email, v_created, v_used
-    from public.cdb_reset_tokens where token = v_hash;
+    return jsonb_build_object('ok', false, 'error', 'Password must be at least 8 characters.'); end if;
+  select email, created_at, used_at into v_email, v_created, v_used from public.cdb_reset_tokens where token = v_hash;
   if v_email is null then return jsonb_build_object('ok', false, 'error', 'Invalid link.'); end if;
   if v_used is not null then return jsonb_build_object('ok', false, 'error', 'This link was already used.'); end if;
-  if now() - v_created > interval '14 days' then
-    return jsonb_build_object('ok', false, 'error', 'This link has expired.');
-  end if;
-
-  -- burn the token first and atomically: two concurrent redemptions race on this
-  -- update and only the one that flips used_at from NULL goes on to set the password
+  if now() - v_created > interval '14 days' then return jsonb_build_object('ok', false, 'error', 'This link has expired.'); end if;
+  if public.is_admin_email(v_email) then
+    return jsonb_build_object('ok', false, 'error', 'Admin passwords must be reset by an administrator directly, not via a reset link.'); end if;
   update public.cdb_reset_tokens set used_at = now() where token = v_hash and used_at is null;
   if not found then return jsonb_build_object('ok', false, 'error', 'This link was already used.'); end if;
-
-  update auth.users
-     set encrypted_password = crypt(p_new_password, gen_salt('bf')),
-         email_confirmed_at = coalesce(email_confirmed_at, now()),
-         updated_at = now()
+  update auth.users set encrypted_password = crypt(p_new_password, gen_salt('bf')),
+         email_confirmed_at = coalesce(email_confirmed_at, now()), updated_at = now()
    where lower(email) = v_email;
   if not found then return jsonb_build_object('ok', false, 'error', 'Account not found.'); end if;
-
-  -- a password change logs the other devices out. GoTrue's session tables differ
-  -- between versions (refresh_tokens.user_id is uuid in some, varchar in others —
-  -- hence the ::text on both sides), so a schema mismatch has to degrade to
-  -- "sessions not revoked" rather than fail the redemption.
   begin
-    delete from auth.sessions
-     where user_id::text = (select id::text from auth.users where lower(email) = v_email);
-    delete from auth.refresh_tokens
-     where user_id::text = (select id::text from auth.users where lower(email) = v_email);
-  exception when undefined_table or undefined_column or undefined_function
-                 or insufficient_privilege then null;
-  end;
-
+    delete from auth.sessions where user_id::text = (select id::text from auth.users where lower(email) = v_email);
+    delete from auth.refresh_tokens where user_id::text = (select id::text from auth.users where lower(email) = v_email);
+  exception when undefined_table or undefined_column or undefined_function or insufficient_privilege then null; end;
   return jsonb_build_object('ok', true);
-end $$;
+end $function$;
 
 -- List every existing auth user (shared across the portals) with their role,
 -- defaulting to 'viewer' — same behavior as the other two sites.
@@ -362,6 +350,20 @@ returns table(email text, role text) language sql security definer set search_pa
   where public.cdb_is_admin() and u.email is not null
   order by lower(u.email)
 $$;
+
+-- Outer EXECUTE barrier: every cdb RPC is guarded in-body, but also must not be
+-- reachable by anon over PostgREST. cdb_redeem_reset_token stays public (it
+-- runs before sign-in).
+revoke execute on function public.cdb_publish(uuid)            from public, anon;
+revoke execute on function public.cdb_start_draft(uuid)        from public, anon;
+revoke execute on function public.cdb_unpublish(uuid)          from public, anon;
+revoke execute on function public.cdb_delete_community(uuid)   from public, anon;
+revoke execute on function public.cdb_admin_add_or_reset(text) from public, anon;
+revoke execute on function public.cdb_admin_list_users()       from public, anon;
+revoke execute on function public.cdb_role()                   from public, anon;
+grant execute on function public.cdb_publish(uuid), public.cdb_start_draft(uuid), public.cdb_unpublish(uuid),
+                          public.cdb_delete_community(uuid), public.cdb_admin_add_or_reset(text),
+                          public.cdb_admin_list_users(), public.cdb_role() to authenticated;
 
 /* -------------------------------------------------------- storage bucket -- */
 insert into storage.buckets (id, name, public)
