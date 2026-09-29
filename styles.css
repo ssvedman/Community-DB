@@ -408,3 +408,22 @@ td.rowx .rowdel:hover,td.rowx .rowdel:focus-visible{opacity:1;background:var(--e
 /* label/value sections with extra template columns (sheet view) */
 .kv-multi td.k{width:230px}
 .kv-multi th{white-space:nowrap}
+
+/* row drag handle + drag feedback (template editor) */
+.tg-grip{flex:none;border:0;background:none;color:var(--mute);cursor:grab;font-size:13px;line-height:1;letter-spacing:-3px;padding:4px 6px 4px 2px;border-radius:5px;touch-action:none;opacity:.55}
+.tg-grip:hover,.tg-grip:focus-visible{opacity:1;color:var(--blue);background:var(--blue-050);outline:none}
+body.tg-dragmode,body.tg-dragmode *{cursor:grabbing!important;user-select:none!important}
+tr.tg-dragging>td{opacity:.3}
+.tg-ghost{position:fixed;z-index:90;pointer-events:none;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--card);border:1.5px solid var(--blue);border-radius:6px;box-shadow:0 10px 28px rgba(10,37,64,.22);font-weight:600;font-size:13px;color:var(--ink);overflow:hidden;white-space:nowrap}
+.tg-ghost .tg-grip-i{color:var(--blue);letter-spacing:-3px}
+.tg-ghost-t{overflow:hidden;text-overflow:ellipsis}
+.tg-ghost-msg{margin-left:auto;font-weight:500;font-size:11.5px;color:var(--red);overflow:hidden;text-overflow:ellipsis}
+.tg-ghost.bad{border-color:var(--red)}
+.tg-dropline{position:fixed;z-index:89;height:3px;border-radius:2px;background:var(--blue);pointer-events:none;box-shadow:0 0 0 3px var(--blue-050)}
+.tg-dropline::before{content:"";position:absolute;left:-4px;top:-3.5px;width:10px;height:10px;border-radius:50%;background:var(--blue)}
+.tg-dropline.bad{background:var(--red);box-shadow:none}
+.tg-dropline.bad::before{background:var(--red)}
+.tg-dropline.warn{background:#d18b00;box-shadow:none}
+.tg-dropline.warn::before{background:#d18b00}
+.tg-ghost.warn{border-color:#d18b00}
+.tg-ghost.warn .tg-ghost-msg{color:#9a6a00}

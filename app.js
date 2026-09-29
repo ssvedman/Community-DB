@@ -603,9 +603,13 @@ function gridAll(sec, d){
   d=d||{}; const arr=Array.isArray(d[sec.key])?d[sec.key]:[];
   const gx=((d.gridx||{})[sec.key])||{};
   const out=[];
-  (sec.rows||[]).forEach(r=>{
-    if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:arr[r.pos]||[], retired:!!r.retired, path:`g.${sec.key}.${r.pos}`, clr:`m:${r.pos}`});
-    else if(r.k) out.push({type:"tpl", label:r.label, cells:gx[r.k]||[], retired:!!r.retired, path:`mx.${sec.key}.${r.k}`, clr:`x:${r.k}`});
+  // a template row dragged in from another table keeps `dkey` — the table key its
+  // cells are stored under — so moving it never moves (or loses) any data
+  (sec.rows||[]).forEach(r=>{ const dk=r.dkey||sec.key;
+    const A = dk===sec.key ? arr : (Array.isArray(d[dk])?d[dk]:[]);
+    const G = dk===sec.key ? gx : (((d.gridx||{})[dk])||{});
+    if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:A[r.pos]||[], retired:!!r.retired, dk, path:`g.${dk}.${r.pos}`, clr:`m:${r.pos}`});
+    else if(r.k) out.push({type:"tpl", label:r.label, cells:G[r.k]||[], retired:!!r.retired, dk, path:`mx.${dk}.${r.k}`, clr:`x:${r.k}`});
   });
   const P=sec.presetBase||0;
   customLabels(sec,d).forEach((lbl,j)=>
@@ -659,14 +663,16 @@ function sectionParts(sec, d, editing, id){
     const showAll = editing && gridShowingAll(sec);
     const cols=colsFor(sec,[d]);
     const tplRows=all.filter(r=>r.type!=="custom");
-    const vis=r=> hasCells(r.cells) || (editing && showAll && !r.retired);
-    const hiddenN=editing?tplRows.filter(r=>!r.retired && !hasCells(r.cells)).length:0;
+    // rows added through the Template tab ("tpl") always show as fillable blanks in
+    // maker mode; only a table's original preset rows collapse behind "Show all rows"
+    const vis=r=> hasCells(r.cells) || (editing && !r.retired && (r.type==="tpl" || showAll));
+    const hiddenN=editing?tplRows.filter(r=>r.type==="preset" && !r.retired && !hasCells(r.cells)).length:0;
     let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${cols.map(c=>`<th class="nowrap">${esc(c.label)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
     const cells=r=>cols.map(c=>`<td class="v">${editing?evCell(id,`${r.path}.${c.pos}`,r.cells[c.pos]||""):esc(r.cells[c.pos]||"")}</td>`).join("");
     // template rows: fixed label; the X clears the row (label is kept so it can be refilled)
     let body=tplRows.map(r=>{ if(!vis(r)) return "";
       return `<tr><td class="k">${esc(r.label)}</td>${cells(r)}${
-        rowXCell(editing, hasCells(r.cells), `data-mdel="${esc(sec.key)}|${esc(r.clr)}"`, r.label)}</tr>`; }).join("");
+        rowXCell(editing, hasCells(r.cells), `data-mdel="${esc(r.dk)}|${esc(r.clr)}"`, r.label)}</tr>`; }).join("");
     // custom rows: editable label + the X fully removes the row (like the Plans table)
     body+=all.filter(r=>r.type==="custom").map(r=>{ const lbl=r.label;
       if(!editing && !hasCells(r.cells) && String(lbl||"").trim()==="") return "";
@@ -1417,7 +1423,7 @@ function diffCIS(pub, draft){
       });
       oldBy.forEach((r,k)=>{ if(!newBy.has(k)) out.plansRemoved.push(_planRowLabel(r)); });
     } else if(sec.kind==="grid"){
-      const gsig=d=>JSON.stringify([d[sec.key]||[], customLabels(sec,d), (d.gridx||{})[sec.key]||{}]);
+      const gsig=d=>JSON.stringify(gridAll(sec,d).map(r=>[r.label,r.cells]));
       if(gsig(dOld)!==gsig(dNew))
         out.fields.push({sec:sec.title,label:"Table updated",from:"",to:""});
     } else if(sec.kind==="note"){
@@ -1780,14 +1786,17 @@ function tplDirty(){ return !!state.tpl && JSON.stringify(state.tpl)!==JSON.stri
 function fieldLocked(f){ return !!f.readonly || TPL_LOCKED.has(f.k); }
 function secLocked(s){ return s.kind==="kv" && (s.fields||[]).some(f=>fieldLocked(f)); }
 function tplRowList(s){ return s.kind==="kv" ? s.fields : s.kind==="grid" ? s.rows : null; }
-const tplRid = r => r.k || ("p"+r.pos);
-function tplRowKey(s,r){ return s.id+"/"+tplRid(r); }
+/* stable row identity across sections: keyed rows by k, positional rows by the
+   table their cells live in + slot */
+const tplRid = (s,r) => r.k || ((r.dkey||s.key||s.id)+":p"+r.pos);
+function tplRowKey(s,r){ return s.id+"/"+tplRid(s,r); }
 
 /* how many communities hold data for a row/section (either the live or the draft version) */
 function tplUse(pred){ return state.items.filter(it=>[it.pub,it.draft].some(row=>row && pred(row.data||{}))).length; }
 function tplRowUse(s,r){
   if(s.kind==="kv") return tplUse(d=>hasCells(kvCells(d,r)));
-  if(s.kind==="grid") return tplUse(d=>hasCells(typeof r.pos==="number" ? (Array.isArray(d[s.key])?d[s.key]:[])[r.pos] : (((d.gridx||{})[s.key])||{})[r.k]));
+  if(s.kind==="grid"){ const dk=r.dkey||s.key;
+    return tplUse(d=>hasCells(typeof r.pos==="number" ? (Array.isArray(d[dk])?d[dk]:[])[r.pos] : (((d.gridx||{})[dk])||{})[r.k])); }
   return 0;
 }
 const tplUseTxt = n => n ? `${n} sheet${n===1?"":"s"} filled` : `<span class="none">empty everywhere</span>`;
@@ -1808,7 +1817,10 @@ function renderTemplate(a){
   list.addEventListener("click",e=>{ const b=e.target.closest("[data-act]"); if(!b||b.disabled||state.tplBusy) return;
     tplAct(b.dataset.act, b.dataset.s!=null?+b.dataset.s:null, b.dataset.r!=null?+b.dataset.r:null); });
   list.addEventListener("change",e=>{ const el=e.target.closest("[data-edit]"); if(el) tplEdit(el); });
-  list.addEventListener("keydown",e=>{ if(e.key==="Enter" && e.target.matches("[data-edit]")){ e.preventDefault(); e.target.blur(); } });
+  list.addEventListener("keydown",e=>{
+    if(e.key==="Enter" && e.target.matches("[data-edit]")){ e.preventDefault(); e.target.blur(); }
+    if((e.key==="ArrowUp"||e.key==="ArrowDown") && e.target.matches("[data-grip]")){ e.preventDefault(); tplKeyMove(e.target, e.key==="ArrowUp"?-1:1); } });
+  list.addEventListener("pointerdown",e=>{ const g=e.target.closest("[data-grip]"); if(g) tplDragStart(e,g); });
 }
 /* the toolbar alone — refreshed after inline edits so typing never loses focus */
 function tplBar(){
@@ -1828,7 +1840,7 @@ function tplBar(){
 
 /* Rows ("r") and columns ("c") share one set of actions; LIST says how each behaves. */
 const LIST = {
-  r: { name:"row", get:s=>tplRowList(s), key:(s,x)=>s.id+"/"+tplRid(x),
+  r: { name:"row", get:s=>tplRowList(s), key:(s,x)=>tplRowKey(s,x),
        use:(s,x)=>tplRowUse(s,x), locked:(s,x)=>s.kind==="kv"&&fieldLocked(x),
        lockTip:"Required — can be renamed but not removed" },
   c: { name:"column", get:s=>(s.kind==="grid"||s.kind==="plans"||s.kind==="kv")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
@@ -1857,10 +1869,11 @@ function tplSecHTML(s, si, canUp, canDown){
   const rows = (tplRowList(s)||[]).map((r,i)=>({r,i})).filter(o=>!o.r.retired);
   const span = (isPlans?0:1) + cols.length + 1;            // label column (if any) + value columns + "+ Column"
   const use=n=>n?`<span class="tg-use" title="${n} sheet${n===1?"":"s"} filled">${n}</span>`:"";
+  // columns keep ← → buttons; rows move with their drag handle instead
   const ctl=(t,o,n,len,lk)=>{ const L=LIST[t]; const horiz=t==="c";
-    return `<span class="tg-ctl">
-      <button class="tbtn" data-act="${t}up" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move ${horiz?"left":"up"}" aria-label="Move ${horiz?"left":"up"}">${horiz?"&#8592;":"&#8593;"}</button>
-      <button class="tbtn" data-act="${t}down" data-s="${si}" data-r="${o.i}" ${n<len-1?"":"disabled"} title="Move ${horiz?"right":"down"}" aria-label="Move ${horiz?"right":"down"}">${horiz?"&#8594;":"&#8595;"}</button>
+    return `<span class="tg-ctl">${horiz?`
+      <button class="tbtn" data-act="cup" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move left" aria-label="Move left">&#8592;</button>
+      <button class="tbtn" data-act="cdown" data-s="${si}" data-r="${o.i}" ${n<len-1?"":"disabled"} title="Move right" aria-label="Move right">&#8594;</button>`:""}
       ${lk?`<button class="tbtn" disabled title="${esc(L.lockTip)}" aria-label="Required ${L.name}">&times;</button>`
           :`<button class="tbtn del" data-act="${t}del" data-s="${si}" data-r="${o.i}" title="Remove ${L.name}" aria-label="Remove ${L.name}">&times;</button>`}
     </span>`; };
@@ -1882,11 +1895,11 @@ function tplSecHTML(s, si, canUp, canDown){
   else {
     const blanks=`<td class="tg-cell"></td>`.repeat(cols.length)+`<td class="tg-cell tg-pad"></td>`;
     body=rows.map((o,n)=>{ const r=o.r; const lk=LIST.r.locked(s,r);
-      return `<tr><td class="tg-lbl">${line(
-        `<input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">`,
+      return `<tr data-row data-s="${si}" data-r="${o.i}"><td class="tg-lbl">${line(
+        `<button class="tg-grip" data-grip data-s="${si}" data-r="${o.i}" title="Drag to move — up/down, or into another section (arrow keys also work)" aria-label="Move ${esc(r.label||"row")}">&#8942;&#8942;</button><input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">`,
         `<span class="tg-meta">${tags("r",r,lk)}${use(LIST.r.use(s,r))}${ctl("r",o,n,rows.length,lk)}</span>`)}</td>${blanks}</tr>`; }).join("");
     if(!rows.length) body+=`<tr><td class="tg-note" colspan="${span}">No rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</td></tr>`;
-    body+=`<tr><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button></td></tr>`;
+    body+=`<tr data-rowend data-s="${si}"><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button></td></tr>`;
   }
   h+=`<div class="tscroll"><table class="tpl-g">${head}${body}</table></div>`;
 
@@ -1971,6 +1984,140 @@ async function tplAct(act, si, ri){
   }
   tplRepaint();
 }
+/* ---- drag a row by its handle: vertical only, within or across sections ----
+   The row's ghost is pinned to its own left edge and width, so it can only
+   travel up and down. A drop line marks the landing spot (red when the move
+   isn't allowed); the page auto-scrolls near the top/bottom edge. */
+let tplDrag=null;
+function tplNextActive(si, ri){ const l=tplRowList(tplWork()[si])||[]; for(let i=ri+1;i<l.length;i++) if(!l[i].retired) return i; return null; }
+/* can row fr of section fs land in section ts? values must be able to follow it */
+function tplCanMove(fs, fr, ts){
+  const T=tplWork(); const S=T[fs], D=T[ts]; const x=(tplRowList(S)||[])[fr];
+  if(!x) return {ok:false,msg:""};
+  if(fs===ts) return {ok:true};
+  const dl=tplRowList(D); if(!dl) return {ok:false,msg:`"${D.title}" doesn't have rows.`};
+  const nm=String(x.label||"").trim();
+  if(nm && dl.some(y=>!y.retired && lc(y.label).trim()===lc(nm))) return {ok:false,msg:`"${D.title}" already has a row called "${nm}".`};
+  if(S.kind===D.kind){                          // values are keyed to the row, so they travel with it
+    // …but a value only shows under a column slot the destination has
+    const miss=[...tplRowSlots(S,x)].filter(pos=>!(D.columns||[]).some(c=>c.pos===pos));
+    if(miss.length){ const names=miss.map(pos=>{ const c=(S.columns||[]).find(c=>c.pos===pos); return c?`"${c.label}"`:"a column"; });
+      return {ok:true, warn:`Values in ${names.join(", ")} won't show in "${D.title}" — it has no matching column. They stay saved and come back if the row moves back.`}; }
+    return {ok:true};
+  }
+  if(LIST.r.locked(S,x)) return {ok:false,msg:`"${nm}" is a required field — it can only move between the spec (label / value) sections.`};
+  const n=LIST.r.use(S,x);
+  if(n) return {ok:false,msg:`"${nm}" already has values on ${n} sheet${n===1?"":"s"}. Those are stored the ${S.kind==="kv"?"spec-field":"table"} way, so it can only move into another ${S.kind==="kv"?"spec (label / value) section":"table section"}.`};
+  return {ok:true};
+}
+/* which column slots hold a value for this row on any sheet */
+function tplRowSlots(S, x){
+  const out=new Set();
+  const add=cells=>(cells||[]).forEach((v,i)=>{ if(v!=null && String(v).trim()!=="") out.add(i); });
+  state.items.forEach(it=>[it.pub,it.draft].forEach(row=>{ if(!row) return; const d=row.data||{};
+    if(S.kind==="kv") add(kvCells(d,x));
+    else if(S.kind==="grid"){ const dk=x.dkey||S.key;
+      add(typeof x.pos==="number" ? (Array.isArray(d[dk])?d[dk]:[])[x.pos] : (((d.gridx||{})[dk])||{})[x.k]); } }));
+  return out;
+}
+function tplMoveRow(fs, fr, ts, before){
+  const T=tplWork(); const S=T[fs], D=T[ts]; const sl=tplRowList(S), dl=tplRowList(D);
+  let x=sl[fr]; if(!x||!dl) return;
+  if(fs===ts){ sl.splice(fr,1); const at=before==null?sl.length:(before>fr?before-1:before); sl.splice(at,0,x); }
+  else {
+    const oldKey=LIST.r.key(S,x); const wasNew=!!state.tplNew[oldKey];
+    sl.splice(fr,1); delete state.tplNew[oldKey];
+    if(S.kind!==D.kind) x={ k:rid(D.kind==="kv"?"c_":"r_"), label:x.label };   // empty row: re-key for its new home
+    else if(S.kind==="grid"){ if(!x.dkey) x.dkey=S.key; if(x.dkey===D.key) delete x.dkey; }  // cells stay where they are
+    dl.splice(before==null?dl.length:before, 0, x);
+    if(wasNew || S.kind!==D.kind) state.tplNew[LIST.r.key(D,x)]=1;
+  }
+  tplRepaint();
+  const ni=dl.indexOf(x); tplFocus(`[data-grip][data-s="${ts}"][data-r="${ni}"]`);
+}
+function tplKeyMove(grip, dir){
+  const si=+grip.dataset.s, ri=+grip.dataset.r; const l=tplRowList(tplWork()[si]); if(!l) return;
+  const x=l[ri]; tplMove(l, ri, dir); tplRepaint();
+  tplFocus(`[data-grip][data-s="${si}"][data-r="${l.indexOf(x)}"]`);
+}
+function tplSlots(){
+  const out=[];
+  document.querySelectorAll("#tplList .tpl-sec").forEach(secEl=>{
+    const end=secEl.querySelector("tr[data-rowend]"); if(!end) return;       // no rows here (Floor Plans, Notes)
+    const si=+secEl.dataset.sec; const pb=secEl.getBoundingClientRect();
+    const trs=[...secEl.querySelectorAll("tr[data-row]")];
+    trs.forEach(tr=>out.push({s:si, before:+tr.dataset.r, y:tr.getBoundingClientRect().top, left:pb.left, width:pb.width}));
+    const last=trs.length?trs[trs.length-1].getBoundingClientRect().bottom:end.getBoundingClientRect().top;
+    out.push({s:si, before:null, y:last, left:pb.left, width:pb.width});
+  });
+  return out;
+}
+function tplDragStart(e, grip){
+  if(e.button!==0 || state.tplBusy || tplDrag) return;
+  const tr=grip.closest("tr"); if(!tr) return;
+  e.preventDefault();
+  const r=tr.getBoundingClientRect();
+  const lbl=(tr.querySelector(".tg-in")||{}).value||"";
+  const ghost=document.createElement("div"); ghost.className="tg-ghost";
+  Object.assign(ghost.style,{left:r.left+"px", width:r.width+"px", top:r.top+"px", height:r.height+"px"});
+  ghost.innerHTML=`<span class="tg-grip-i">&#8942;&#8942;</span><span class="tg-ghost-t">${esc(lbl)||'<i>(no label)</i>'}</span><span class="tg-ghost-msg"></span>`;
+  const line=document.createElement("div"); line.className="tg-dropline";
+  document.body.appendChild(line); document.body.appendChild(ghost);
+  tr.classList.add("tg-dragging"); document.body.classList.add("tg-dragmode");
+  tplDrag={ s:+grip.dataset.s, r:+grip.dataset.r, tr, ghost, line, dy:e.clientY-r.top, y:e.clientY, slot:null, raf:0 };
+  try{ grip.setPointerCapture(e.pointerId); }catch(_){}
+  window.addEventListener("pointermove",tplDragMove);
+  window.addEventListener("pointerup",tplDragEnd);
+  window.addEventListener("pointercancel",tplDragCleanup);
+  document.addEventListener("keydown",tplDragKey,true);
+  tplDragMove(e);
+  if(window.requestAnimationFrame) tplDrag.raf=requestAnimationFrame(tplDragScroll);
+}
+function tplDragMove(e){
+  const D=tplDrag; if(!D) return;
+  if(e && e.clientY!=null) D.y=e.clientY;
+  D.ghost.style.top=(D.y-D.dy)+"px";                       // top only — no sideways movement
+  let best=null, bd=Infinity;
+  tplSlots().forEach(sl=>{ const dd=Math.abs(sl.y-D.y); if(dd<bd){ bd=dd; best=sl; } });
+  D.slot=best;
+  if(!best){ D.line.style.display="none"; return; }
+  const chk=tplCanMove(D.s, D.r, best.s);
+  best.ok=chk.ok; best.msg=chk.msg;
+  best.noop = best.s===D.s && (best.before===D.r || best.before===tplNextActive(D.s,D.r));
+  Object.assign(D.line.style,{display:best.noop?"none":"block", top:(best.y-1.5)+"px", left:best.left+"px", width:best.width+"px"});
+  D.line.classList.toggle("bad",!chk.ok);
+  best.warn=chk.warn||"";
+  D.line.classList.toggle("warn",!!best.warn && chk.ok);
+  D.ghost.classList.toggle("bad",!chk.ok && !best.noop);
+  D.ghost.classList.toggle("warn",!!best.warn && chk.ok && !best.noop);
+  D.ghost.querySelector(".tg-ghost-msg").textContent = best.noop ? "" : (!chk.ok ? chk.msg : (best.warn ? "Some values won't show here" : ""));
+}
+function tplDragScroll(){
+  const D=tplDrag; if(!D) return;
+  const m=70, h=window.innerHeight; let v=0;
+  if(D.y<m) v=-Math.ceil((m-D.y)/5); else if(D.y>h-m) v=Math.ceil((D.y-(h-m))/5);
+  if(v){ window.scrollBy(0,v); tplDragMove(); }
+  D.raf=requestAnimationFrame(tplDragScroll);
+}
+function tplDragKey(e){ if(e.key==="Escape"){ e.preventDefault(); e.stopPropagation(); tplDragCleanup(); } }
+function tplDragCleanup(){
+  const D=tplDrag; if(!D) return; tplDrag=null;
+  if(D.raf && window.cancelAnimationFrame) cancelAnimationFrame(D.raf);
+  window.removeEventListener("pointermove",tplDragMove);
+  window.removeEventListener("pointerup",tplDragEnd);
+  window.removeEventListener("pointercancel",tplDragCleanup);
+  document.removeEventListener("keydown",tplDragKey,true);
+  D.ghost.remove(); D.line.remove(); D.tr.classList.remove("tg-dragging"); document.body.classList.remove("tg-dragmode");
+  return D;
+}
+function tplDragEnd(e){
+  if(tplDrag && e && e.clientY!=null) tplDragMove(e);
+  const D=tplDragCleanup(); if(!D || !D.slot || D.slot.noop) return;
+  if(!D.slot.ok){ if(D.slot.msg) uiAlert(D.slot.msg,"Can't move this row"); return; }
+  const sl=D.slot;
+  if(sl.warn){ uiConfirm(sl.warn+" Move it anyway?",{title:"Move row",okText:"Move row"}).then(y=>{ if(y) tplMoveRow(D.s, D.r, sl.s, sl.before); }); return; }
+  tplMoveRow(D.s, D.r, sl.s, sl.before);
+}
 function tplRepaint(){ if(state.view==="template") renderTemplate($("viewArea")); updateCounts(); }
 async function tplDiscard(){
   if(!tplDirty()) return;
@@ -2016,7 +2163,8 @@ async function tplSave(){
 /* short human summary of what changed, for the save confirmation */
 function tplChangeSummary(before, after){
   const B=new Map(before.map(s=>[s.id,s]));
-  let addS=0, remS=0, addR=0, remR=0, addC=0, remC=0, ren=0, moved=false;
+  let addS=0, remS=0, addR=0, remR=0, addC=0, remC=0, ren=0, moved=false, movR=0;
+  const rowHome=new Map(); before.forEach(o=>(tplRowList(o)||[]).forEach(r=>rowHome.set(tplRid(o,r),o.id)));
   const both=new Set(after.filter(s=>!s.retired && B.has(s.id) && !B.get(s.id).retired).map(s=>s.id));
   if(before.filter(s=>both.has(s.id)).map(s=>s.id).join()!==after.filter(s=>both.has(s.id)).map(s=>s.id).join()) moved=true;
   before.forEach(o=>{ if(!after.some(s=>s.id===o.id)) remS++; });
@@ -2026,13 +2174,13 @@ function tplChangeSummary(before, after){
     if(o.retired && !s.retired) addS++;
     if(o.title!==s.title) ren++;
     if(o.kind==="grid" && o.rowHeader!==s.rowHeader) ren++;
-    [["r",x=>tplRowList(x)],["c",x=>(x.kind==="grid"||x.kind==="plans")?x.columns:null]].forEach(([t,get])=>{
+    [["r",x=>tplRowList(x)],["c",x=>(x.kind==="grid"||x.kind==="plans"||x.kind==="kv")?x.columns:null]].forEach(([t,get])=>{
       const ol=get(o)||[], nl=get(s)||[];
-      const id=r=>t==="c"?"c"+r.pos:tplRid(r);
+      const id=r=>t==="c"?"c"+r.pos:tplRid(s,r);
       const OB=new Map(ol.map(r=>[id(r),r]));
       const add=()=>{ if(t==="c") addC++; else addR++; }, rem=()=>{ if(t==="c") remC++; else remR++; };
       nl.forEach(r=>{ const x=OB.get(id(r));
-        if(!x){ if(!r.retired) add(); return; }
+        if(!x){ if(r.retired) return; if(t==="r" && rowHome.has(id(r)) && rowHome.get(id(r))!==s.id) movR++; else add(); return; }
         if(!x.retired && r.retired) rem();
         if(x.retired && !r.retired) add();
         if(x.label!==r.label) ren++; });
@@ -2049,6 +2197,7 @@ function tplChangeSummary(before, after){
   if(remR) parts.push(p(remR,"row")+" removed");
   if(addC) parts.push(p(addC,"column")+" added");
   if(remC) parts.push(p(remC,"column")+" removed");
+  if(movR) parts.push(p(movR,"row")+" moved to another section");
   if(ren)  parts.push(p(ren,"rename"));
   if(moved) parts.push("reordered");
   return parts.join(", ");

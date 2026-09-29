@@ -40,7 +40,8 @@ on a 1080p display while conserving free-tier storage.
 
 **Template** (editors and admins, Maker side) shows every section as the grid it becomes on a sheet.
 Type straight into a section title, column heading or row label to rename it; use **+ Row** /
-**+ Column** to add one at a time, the arrows to reorder, and **×** to remove. **+ Add section**
+**+ Column** to add one at a time, and **×** to remove. Drag a row by its **⋮⋮** handle to move it up or
+down — including into another section (arrow keys work on a focused handle); columns reorder with ← →. **+ Add section**
 creates a table with a row-label column and one text column ("Value"). Nothing changes for anyone
 until **Save template**. Requires `add_template.sql` (run once); until the first save, the default
 layout in `config.js` is used.
@@ -56,6 +57,12 @@ layout in `config.js` is used.
 - Every section except Notes can take extra columns. On label/value sections the original **Value**
   column stays put (renameable, not removable) and extra columns store in `data.fc`; a section with only
   its Value column looks exactly as before.
+- Moving a row keeps its values: fields move freely between the spec (label / value) sections, and
+  table rows between tables (a moved table row remembers where its cells are stored). A row with
+  values can't move between a spec section and a table; if the destination lacks one of the row's
+  filled columns the editor warns first.
+- A row added through the template shows on every existing sheet in Maker mode as an empty cell to
+  fill in (viewers only see it once it has a value).
 - Every save writes a snapshot to `cdb_template_revisions`. Saving over someone else's newer save asks first.
 
 ## Files
