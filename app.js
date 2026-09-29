@@ -46,9 +46,20 @@ function isoToDate(iso){ const m=String(iso||"").match(/^(\d{4})-(\d{2})-(\d{2})
    - grid (Model) rows carry either `pos` (the original positional rows, cells in
      d.model[pos]) or `k` (rows added by the template, cells in d.gridx[key][k]),
      so adding/reordering template rows never shifts existing cell data. Per-sheet
-     custom rows stay at d.model[presetBase + j] with labels in d.model_labels. */
+     custom rows stay at d.model[presetBase + j] with labels in d.model_labels.
+     Other (template-created) tables keep cells in d[key] and custom labels in
+     d.gridl[key]; only Model uses d.model / d.model_labels.
+   - columns (Floor Plans + every table) are {label, pos}: `pos` is the cell's
+     slot in each row array and is never reused (the section's colNext counter
+     only grows), so adding, reordering or removing a column never shifts a
+     value. A removed column is `retired` and still shows on sheets where any
+     row has a value in it. */
 const TPL_ID = (CFG.DIVISION && CFG.DIVISION.key) || "orlando";
 const clone = o => JSON.parse(JSON.stringify(o));
+function normCols(cols){
+  const out=(Array.isArray(cols)?cols:[]).map((c,i)=> (c&&typeof c==="object") ? {...c,label:String(c.label||"")} : {label:String(c==null?"":c),pos:i});
+  return out.filter(c=>typeof c.pos==="number");
+}
 function normTemplate(secs){
   return (Array.isArray(secs)?secs:[]).filter(s=>s&&s.id&&s.kind).map(s0=>{ const s=clone(s0);
     s.title=String(s.title||"");
@@ -57,9 +68,37 @@ function normTemplate(secs){
       if(!Array.isArray(s.rows)) s.rows=(s.rowLabels||[]).map((l,i)=>({label:String(l||""),pos:i}));
       if(typeof s.presetBase!=="number") s.presetBase=Array.isArray(s.rowLabels)?s.rowLabels.length
         : s.rows.reduce((m,r)=>typeof r.pos==="number"?Math.max(m,r.pos+1):m,0);
-      delete s.rowLabels; s.columns=Array.isArray(s.columns)?s.columns:[];
+      delete s.rowLabels;
+      if(!s.key) s.key=s.id;
+      s.rowHeader=String(s.rowHeader==null?"":s.rowHeader);
+    }
+    if(s.kind==="grid" || s.kind==="plans"){
+      s.columns=normCols(s.kind==="plans" && !Array.isArray(s.columns) ? SCHEMA.PLAN_COLS : s.columns);
+      const hi=s.columns.reduce((m,c)=>Math.max(m,c.pos+1),0);
+      s.colNext=Math.max(typeof s.colNext==="number"?s.colNext:0, hi);
     }
     return s; });
+}
+/* the table columns to show for these records: active ones, plus retired ones
+   that still hold a value in at least one of them */
+function colsFor(sec, datas){
+  const hasCol=pos=>datas.some(d=>tableRows(sec,d).some(r=>{ const v=r[pos]; return v!=null && String(v).trim()!==""; }));
+  return (sec.columns||[]).filter(c=>!c.retired || hasCol(c.pos));
+}
+/* raw cell arrays of a table section for one record (plans rows, or every grid row) */
+function tableRows(sec, d){
+  d=d||{};
+  if(sec.kind==="plans") return Array.isArray(d.plans)?d.plans.filter(Array.isArray):[];
+  if(sec.kind==="grid") return gridAll(sec,d).map(r=>r.cells);
+  return [];
+}
+const planSec = () => SCHEMA.SECTIONS.find(s=>s.kind==="plans") || {columns:normCols(SCHEMA.PLAN_COLS), colNext:SCHEMA.PLAN_COLS.length};
+const gridSec = key => SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key);
+/* per-sheet custom row labels: Model keeps its original d.model_labels */
+function customLabels(sec, d, create){
+  if(sec.key==="model"){ if(create && !Array.isArray(d.model_labels)) d.model_labels=[]; return Array.isArray(d.model_labels)?d.model_labels:[]; }
+  if(create){ d.gridl=d.gridl||{}; if(!Array.isArray(d.gridl[sec.key])) d.gridl[sec.key]=[]; }
+  const g=(d.gridl||{})[sec.key]; return Array.isArray(g)?g:[];
 }
 SCHEMA.DEFAULT_SECTIONS = normTemplate(SCHEMA.SECTIONS);
 SCHEMA.SECTIONS = clone(SCHEMA.DEFAULT_SECTIONS);
@@ -554,19 +593,19 @@ function gridAll(sec, d){
   const gx=((d.gridx||{})[sec.key])||{};
   const out=[];
   (sec.rows||[]).forEach(r=>{
-    if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:arr[r.pos]||[], retired:!!r.retired, path:`m.${r.pos}`, clr:`m:${r.pos}`});
+    if(typeof r.pos==="number") out.push({type:"preset", label:r.label, cells:arr[r.pos]||[], retired:!!r.retired, path:`g.${sec.key}.${r.pos}`, clr:`m:${r.pos}`});
     else if(r.k) out.push({type:"tpl", label:r.label, cells:gx[r.k]||[], retired:!!r.retired, path:`mx.${sec.key}.${r.k}`, clr:`x:${r.k}`});
   });
   const P=sec.presetBase||0;
-  (Array.isArray(d.model_labels)?d.model_labels:[]).forEach((lbl,j)=>
-    out.push({type:"custom", label:lbl, cells:arr[P+j]||[], j, path:`m.${P+j}`}));
+  customLabels(sec,d).forEach((lbl,j)=>
+    out.push({type:"custom", label:lbl, cells:arr[P+j]||[], j, path:`g.${sec.key}.${P+j}`}));
   return out;
 }
 /* does this record hold anything in this section? (drives retired-section visibility) */
 function secHasData(sec, d){
   d=d||{};
   if(sec.kind==="kv") return (sec.fields||[]).some(f=>fval(d,f.k)) || ((d.extra||{})[sec.id]||[]).some(p=>p&&String(p[1]||"").trim());
-  if(sec.kind==="plans") return Array.isArray(d.plans) && d.plans.some(hasCells);
+  if(sec.kind==="plans") return Array.isArray(d.plans) && d.plans.length>0;
   if(sec.kind==="grid") return gridAll(sec,d).some(r=>hasCells(r.cells) || (r.type==="custom" && String(r.label||"").trim()));
   if(sec.kind==="note") return String(d.note==null?"":d.note).trim()!=="";
   return false;
@@ -596,14 +635,14 @@ function sectionParts(sec, d, editing, id){
     return { btn:"", body: rows?`<table>${rows}</table>`:(editing?`<table></table>`:"") };
   }
   if(sec.kind==="plans"){
-    const arr=Array.isArray(d.plans)?d.plans:[]; const cols=SCHEMA.PLAN_COLS;
+    const arr=Array.isArray(d.plans)?d.plans:[]; const cols=colsFor(sec,[d]);
     if(!arr.length && !editing) return { btn:"", body:"" };
-    let head=`<tr>${cols.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
-    const cell=(ri,ci,raw)=>{ const v=raw||"";
+    let head=`<tr>${cols.map(c=>`<th class="nowrap">${esc(c.label)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+    const cell=(ri,ci,raw)=>{ const v=raw||"";   // ci = the column's stored slot (pos)
       if(ci===1){ // Plan Name / footprint: truncated label, click opens a popup (view or edit)
         return `<td class="v"><span class="plname" data-planopen="${ri}" data-full="${esc(v)}">${v?esc(v):'<span class="none">—</span>'}</span></td>`; }
       return `<td class="v">${editing?evCell(id,`p.${ri}.${ci}`,v):esc(v)}</td>`; };
-    let body=arr.map((r,ri)=>`<tr>${cols.map((c,ci)=>cell(ri,ci,r[ci])).join("")}${
+    let body=arr.map((r,ri)=>`<tr>${cols.map(c=>cell(ri,c.pos,r[c.pos])).join("")}${
       rowXCell(editing, true, `data-pldel="${ri}"`, _planRowLabel(r)||"this row")}</tr>`).join("");
     return { btn: (editing && !sec.retired)?`<button data-pladd="1">Add row</button>`:"",
              body: `<div class="tscroll"><table class="plans-t">${head}${body}</table></div>` };
@@ -616,12 +655,13 @@ function sectionParts(sec, d, editing, id){
     // is on (so empty rows can be filled on demand). A row removed from the
     // template (retired) only ever shows where it still has data.
     // Per-sheet custom rows are always shown in maker mode and are fully removable.
-    const showAll = editing && state.gridShowAll && state.gridShowAll[sec.key];
+    const showAll = editing && gridShowingAll(sec);
+    const cols=colsFor(sec,[d]);
     const tplRows=all.filter(r=>r.type!=="custom");
     const vis=r=> hasCells(r.cells) || (editing && showAll && !r.retired);
     const hiddenN=editing?tplRows.filter(r=>!r.retired && !hasCells(r.cells)).length:0;
-    let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${sec.columns.map(c=>`<th class="nowrap">${esc(c)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
-    const cells=r=>sec.columns.map((c,ci)=>`<td class="v">${editing?evCell(id,`${r.path}.${ci}`,r.cells[ci]||""):esc(r.cells[ci]||"")}</td>`).join("");
+    let head=`<tr><th class="nowrap">${esc(sec.rowHeader||"")}</th>${cols.map(c=>`<th class="nowrap">${esc(c.label)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+    const cells=r=>cols.map(c=>`<td class="v">${editing?evCell(id,`${r.path}.${c.pos}`,r.cells[c.pos]||""):esc(r.cells[c.pos]||"")}</td>`).join("");
     // template rows: fixed label; the X clears the row (label is kept so it can be refilled)
     let body=tplRows.map(r=>{ if(!vis(r)) return "";
       return `<tr><td class="k">${esc(r.label)}</td>${cells(r)}${
@@ -629,13 +669,13 @@ function sectionParts(sec, d, editing, id){
     // custom rows: editable label + the X fully removes the row (like the Plans table)
     body+=all.filter(r=>r.type==="custom").map(r=>{ const lbl=r.label;
       if(!editing && !hasCells(r.cells) && String(lbl||"").trim()==="") return "";
-      const labelCell=editing?evCell(id,`ml.${r.j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
+      const labelCell=editing?evCell(id,`gl.${sec.key}.${r.j}`,lbl||""):(esc(lbl||"")||'<span class="none">—</span>');
       return `<tr><td class="k">${labelCell}</td>${cells(r)}${
         rowXCell(editing, true, `data-mrowdel="${esc(sec.key)}.${r.j}"`, lbl||"this row", true)}</tr>`; }).join("");
     const addBtn=(editing && !sec.retired)?`<button data-gridadd="${esc(sec.key)}">Add row</button>`:"";
     const moreBtn=(editing && (hiddenN||showAll))?` <button data-gridall="${esc(sec.key)}">${showAll?"Show fewer rows":`Show all rows${hiddenN?` (${hiddenN} more)`:""}`}</button>`:"";
     return { btn: addBtn+moreBtn,
-             body: `<div class="tscroll"><table class="plans-t model-t">${head}${body}</table></div>` };
+             body: `<div class="tscroll"><table class="plans-t ${sec.key==="model"?"model-t":"grid-t"}">${head}${body}</table></div>` };
   }
   if(sec.kind==="note"){
     const t=(d.note==null?"":String(d.note));
@@ -644,6 +684,9 @@ function sectionParts(sec, d, editing, id){
   }
   return { btn:"", body:"" };
 }
+/* Model starts collapsed to its filled rows (its long preset list is mostly
+   optional); template-created tables start with every row showing. */
+function gridShowingAll(sec){ const v=state.gridShowAll&&state.gridShowAll[sec.key]; return v==null ? sec.key!=="model" : !!v; }
 function renderSection(sec, d, editing, id){
   const p=sectionParts(sec, d, editing, id);
   if(!p.body) return "";
@@ -774,7 +817,8 @@ function wireEditables(id){
   $("detail").querySelectorAll("[data-gridadd]").forEach(b=>b.onclick=()=>gridAdd(id,b.dataset.gridadd));
   $("detail").querySelectorAll("[data-mrowdel]").forEach(b=>b.onclick=()=>{ const p=b.dataset.mrowdel.split("."); gridRowDel(id,p[0],+p[1],b.dataset.rowlabel,b.dataset.shared==="1"); });
   $("detail").querySelectorAll("[data-gridall]").forEach(b=>b.onclick=()=>{
-    state.gridShowAll=state.gridShowAll||{}; state.gridShowAll[b.dataset.gridall]=!state.gridShowAll[b.dataset.gridall]; openDetail(id); });
+    const sec=gridSec(b.dataset.gridall); state.gridShowAll=state.gridShowAll||{};
+    state.gridShowAll[b.dataset.gridall]=!(sec?gridShowingAll(sec):state.gridShowAll[b.dataset.gridall]); openDetail(id); });
 }
 // Plan Name / footprint popup — read-only in viewer, editable textarea in maker.
 function wirePlanNames(id, editing){
@@ -836,8 +880,8 @@ function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; co
   if(kind==="f") return (d.f||{})[p[1]];
   if(kind==="note") return d.note||"";
   if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
-  if(kind==="m"){ const r=(d.model||[])[+p[1]]||[]; return r[+p[2]]; }
-  if(kind==="ml"){ return (d.model_labels||[])[+p[1]]; }
+  if(kind==="g"){ const r=(Array.isArray(d[p[1]])?d[p[1]]:[])[+p[2]]||[]; return r[+p[3]]; }
+  if(kind==="gl"){ const sec=gridSec(p[1]); return sec?customLabels(sec,d)[+p[2]]:""; }
   if(kind==="mx"){ const r=(((d.gridx||{})[p[1]])||{})[p[2]]||[]; return r[+p[3]]; }
   if(kind==="x"){ const arr=(d.extra||{})[p[1]]||[]; const pair=arr[+p[2]]||[]; return pair[1]; }
   return "";
@@ -851,29 +895,34 @@ async function setPath(id,path,value){
     if(p[1]===I.project) row.project_name=value; if(p[1]===I.product) row.hub=value;
   }
   else if(kind==="note") d.note=value;
-  else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||["","","","",""]; r[+p[2]]=value; }
-  else if(kind==="m"){ d.model=d.model||[]; const r=d.model[+p[1]]=d.model[+p[1]]||["","","",""]; r[+p[2]]=value; }
-  else if(kind==="ml"){ d.model_labels=d.model_labels||[]; d.model_labels[+p[1]]=value; }
+  else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||[];
+    while(r.length<planSec().colNext) r.push(""); r[+p[2]]=value; }
+  else if(kind==="g"){ const sec=gridSec(p[1]); const n=sec?sec.colNext:4;
+    const arr=d[p[1]]=Array.isArray(d[p[1]])?d[p[1]]:[]; while(arr.length<=+p[2]) arr.push([]);
+    const r=arr[+p[2]]=Array.isArray(arr[+p[2]])?arr[+p[2]]:[];
+    while(r.length<n) r.push(""); r[+p[3]]=value; }
+  else if(kind==="gl"){ const sec=gridSec(p[1]); if(sec) customLabels(sec,d,true)[+p[2]]=value; }
   else if(kind==="mx"){ d.gridx=d.gridx||{}; const g=d.gridx[p[1]]=d.gridx[p[1]]||{};
-    const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===p[1]); const n=sec?sec.columns.length:4;
-    const r=g[p[2]]=Array.isArray(g[p[2]])?g[p[2]]:Array.from({length:n},()=>""); r[+p[3]]=value; }
+    const sec=gridSec(p[1]); const n=sec?sec.colNext:4;
+    const r=g[p[2]]=Array.isArray(g[p[2]])?g[p[2]]:[]; while(r.length<n) r.push(""); r[+p[3]]=value; }
   else if(kind==="x"){ d.extra=d.extra||{}; const arr=d.extra[p[1]]=d.extra[p[1]]||[]; const pair=arr[+p[2]]=arr[+p[2]]||["",""]; pair[1]=value; }
   await saveDraft(row); refreshItemMeta(id);
 }
-async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{}; (d.plans=d.plans||[]).push(["","","","",""]); await saveDraft(row); openDetail(id); }
+async function plAdd(id){ const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{};
+  (d.plans=d.plans||[]).push(Array.from({length:planSec().colNext},()=>"")); await saveDraft(row); openDetail(id); }
 async function plDel(id,ri){ const row=await ensureDraft(id); if(!row) return; const d=row.data||{}; (d.plans||[]).splice(ri,1); await saveDraft(row); openDetail(id); }
 /* Add a custom row to a grid (Model) section: a blank editable label + blank cells,
    appended after the positional preset rows. Slots are padded so the new cells
    land at presetBase + j, matching gridAll(). */
 async function gridAdd(id, key){
   const row=await ensureDraft(id); if(!row) return; const d=row.data=row.data||{};
-  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.presetBase:0;
+  const sec=gridSec(key); if(!sec) return; const P=sec.presetBase||0;
   d[key]=Array.isArray(d[key])?d[key]:[];
-  const at=P+(Array.isArray(d.model_labels)?d.model_labels.length:0);
+  const labels=customLabels(sec,d,true);
+  const at=P+labels.length;
   while(d[key].length<at) d[key].push([]);
-  d[key][at]=(sec?sec.columns:[0,0,0,0]).map(()=>"");
-  d.model_labels=Array.isArray(d.model_labels)?d.model_labels:[];
-  d.model_labels.push("");
+  d[key][at]=Array.from({length:sec.colNext},()=>"");
+  labels.push("");
   await saveDraft(row); openDetail(id);
 }
 /* Fully remove a custom grid row (label + cells). j is the index within the custom
@@ -884,10 +933,10 @@ async function gridAdd(id, key){
 async function gridRowDel(id, key, j, label, shared){
   const ids = shared ? await delScope(id, shared, label) : [id];
   if(!ids) return;
-  const sec=SCHEMA.SECTIONS.find(s=>s.kind==="grid"&&s.key===key); const P=sec?sec.presetBase:0;
+  const sec=gridSec(key); if(!sec) return; const P=sec.presetBase||0;
   for(const x of ids){
     const row=await ensureDraft(x); if(!row) continue; const d=row.data||{};
-    const labels=Array.isArray(d.model_labels)?d.model_labels:[];
+    const labels=customLabels(sec,d);
     const jj = (x===id) ? j : labels.findIndex(l=>String(l||"").toLowerCase()===String(label||"").toLowerCase());
     if(jj<0 || jj>=labels.length) continue;
     if(Array.isArray(d[key])) d[key].splice(P+jj,1);
@@ -955,7 +1004,8 @@ async function gridDel(id, key, ref, shared, label){
 function exportCIS(id){
   if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
   const it=itemById(id); const row=shownRow(it); if(!row) return; const d=row.data||{};
-  const NC=5;
+  // wide enough for the widest table (plans columns, or row label + table columns)
+  const NC=Math.max(5, ...SCHEMA.SECTIONS.map(sc=>sc.kind==="plans"?colsFor(sc,[d]).length:sc.kind==="grid"?colsFor(sc,[d]).length+1:0));
   const BORDER={ style:"thin", color:{rgb:"D8DEE8"} }, BOX={top:BORDER,bottom:BORDER,left:BORDER,right:BORDER};
   const stTitle ={ font:{bold:true, sz:15, color:{rgb:"1F3864"}} };
   const stSection={ font:{bold:true, sz:11, color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"2E5C8A"}}, alignment:{vertical:"center"} };
@@ -981,13 +1031,15 @@ function exportCIS(id){
     } else if(sec.kind==="plans"){
       const arr=d.plans||[]; if(!arr.length) return;
       fullRow(sec.title, stSection);
-      SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stPHdr)); R++;
-      arr.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stPCell)); R++; }); R++;
+      const pc=colsFor(sec,[d]);
+      pc.forEach((c,ci)=>put(R,ci,c.label,stPHdr)); for(let c=pc.length;c<NC;c++) put(R,c,"",stPHdr); R++;
+      arr.forEach(r=>{ pc.forEach((c,ci)=>put(R,ci,r[c.pos]||"",stPCell)); for(let c=pc.length;c<NC;c++) put(R,c,"",stPCell); R++; }); R++;
     } else if(sec.kind==="grid"){
       const rows=gridAll(sec,d).filter(r=>hasCells(r.cells)); if(!rows.length) return;   // blank rows don't print
       fullRow(sec.title, stSection);
-      put(R,0,sec.rowHeader||"",stPHdr); sec.columns.forEach((c,ci)=>put(R,ci+1,c,stPHdr)); R++;
-      rows.forEach(r=>{ put(R,0,r.label,stKey); sec.columns.forEach((c,ci)=>put(R,ci+1,r.cells[ci]||"",stPCell)); R++; }); R++;
+      const gc=colsFor(sec,[d]);
+      put(R,0,sec.rowHeader||"",stPHdr); gc.forEach((c,ci)=>put(R,ci+1,c.label,stPHdr)); for(let c=gc.length+1;c<NC;c++) put(R,c,"",stPHdr); R++;
+      rows.forEach(r=>{ put(R,0,r.label,stKey); gc.forEach((c,ci)=>put(R,ci+1,r.cells[c.pos]||"",stPCell)); for(let c=gc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; }); R++;
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(!t) return;
       fullRow(sec.title, stSection); fullRow(t, stVal); R++;
@@ -997,7 +1049,7 @@ function exportCIS(id){
 
   ws["!ref"]=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:Math.max(R-1,0),c:NC-1}});
   ws["!merges"]=merges;
-  ws["!cols"]=[{wch:32},{wch:54},{wch:22},{wch:14},{wch:22}];
+  ws["!cols"]=[{wch:32},{wch:54},{wch:22},{wch:14},{wch:22}].concat(Array.from({length:Math.max(0,NC-5)},()=>({wch:18})));
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "CIS");
   XLSX.writeFile(wb, `CIS_${(row.name||"CIS").replace(/[^\w\-]+/g,"_").slice(0,40)}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
@@ -1034,18 +1086,20 @@ function exportCISpdf(id, opts){
       if(body.length) sectionTable(sec.title, body);
     } else if(sec.kind==="plans"){
       const arr=d.plans||[]; if(arr.length){
-        sectionTable(sec.title, arr.map(r=>SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||"")),
-          {cols:SCHEMA.PLAN_COLS.length, columnStyles:{}, extra:{ head:[[
-            {content:sec.title,colSpan:SCHEMA.PLAN_COLS.length,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
-            SCHEMA.PLAN_COLS.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]}});
+        const pc=colsFor(sec,[d]);
+        sectionTable(sec.title, arr.map(r=>pc.map(c=>r[c.pos]||"")),
+          {cols:pc.length, columnStyles:{}, extra:{ head:[[
+            {content:sec.title,colSpan:pc.length,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+            pc.map(c=>({content:c.label,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]}});
       }
     } else if(sec.kind==="grid"){
+      const gc=colsFor(sec,[d]);
       const body=gridAll(sec,d).filter(r=>hasCells(r.cells))   // blank rows don't print
-        .map(r=>[r.label, ...sec.columns.map((c,ci)=>r.cells[ci]||"")]);
+        .map(r=>[r.label, ...gc.map(c=>r.cells[c.pos]||"")]);
       if(body.length){
-        sectionTable(sec.title, body, { cols:sec.columns.length+1, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
-          {content:sec.title,colSpan:sec.columns.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
-          [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...sec.columns.map(c=>({content:c,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
+        sectionTable(sec.title, body, { cols:gc.length+1, columnStyles:{0:{fontStyle:"bold",fillColor:grey,cellWidth:110}}, extra:{ head:[[
+          {content:sec.title,colSpan:gc.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+          [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...gc.map(c=>({content:c.label,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
       }
     } else if(sec.kind==="note"){
       const t=d.note==null?"":String(d.note); if(t) sectionTable(sec.title, [[t]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}});
@@ -1079,16 +1133,19 @@ function clusterExportModel(grp){
         if(vals.every(v=>v===vals[0])) shared.push([L, vals[0]]); else diff.push([L, ...vals]); });
       if(shared.length||diff.length) secs.push({kind:"kv", title:sec.title, shared, diff});
     } else if(sec.kind==="plans"){
+      const cols=colsFor(sec,cx.datas);
+      const rowsOf=d=>(Array.isArray(d.plans)?d.plans:[]).map(r=>cols.map(c=>S((r||[])[c.pos])));
       const js=cx.datas.map(d=>JSON.stringify(d.plans||[]));
-      const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:cx.datas[0].plans||[]}]
-        : cx.datas.map((d,i)=>({label:cx.labels[i], rows:d.plans||[]}))).filter(t=>t.rows.length);
-      if(tabs.length) secs.push({kind:"plans", title:sec.title, tabs});
+      const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
+        : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
+      if(tabs.length) secs.push({kind:"plans", title:sec.title, head:cols.map(c=>c.label), tabs});
     } else if(sec.kind==="grid"){
-      const rowsOf=d=>gridAll(sec,d).map(r=>[r.label, ...sec.columns.map((c,ci)=>S(r.cells[ci]))]).filter(r=>r.slice(1).some(x=>x));
+      const cols=colsFor(sec,cx.datas);
+      const rowsOf=d=>gridAll(sec,d).map(r=>[r.label, ...cols.map(c=>S(r.cells[c.pos]))]).filter(r=>r.slice(1).some(x=>x));
       const js=cx.datas.map(d=>JSON.stringify(rowsOf(d)));
       const tabs=(js.every(x=>x===js[0]) ? [{label:null, rows:rowsOf(cx.datas[0])}]
         : cx.datas.map((d,i)=>({label:cx.labels[i], rows:rowsOf(d)}))).filter(t=>t.rows.length);
-      if(tabs.length) secs.push({kind:"grid", title:sec.title, sec, tabs});
+      if(tabs.length) secs.push({kind:"grid", title:sec.title, sec, head:[sec.rowHeader||"", ...cols.map(c=>c.label)], tabs});
     } else if(sec.kind==="note"){
       const vals=cx.datas.map(d=>S(d.note));
       if(!vals.some(v=>v)) return;
@@ -1102,7 +1159,7 @@ function clusterExportModel(grp){
 function exportClusterXLSX(grp){
   if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
   const { cx, secs }=clusterExportModel(grp);
-  const n=cx.labels.length; const NC=Math.max(5, n+1);
+  const n=cx.labels.length; const NC=Math.max(5, n+1, ...secs.map(x=>(x.head||[]).length));
   const BORDER={ style:"thin", color:{rgb:"D8DEE8"} }, BOX={top:BORDER,bottom:BORDER,left:BORDER,right:BORDER};
   const stTitle ={ font:{bold:true, sz:15, color:{rgb:"1F3864"}} };
   const stSub   ={ font:{italic:true, sz:9, color:{rgb:"6B7794"}} };
@@ -1129,13 +1186,13 @@ function exportClusterXLSX(grp){
     } else if(s.kind==="plans"){
       s.tabs.forEach(t=>{
         fullRow(s.title+(t.label?` — ${t.label}`:""), stSection);
-        SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,c,stHdr)); for(let c=SCHEMA.PLAN_COLS.length;c<NC;c++) put(R,c,"",stHdr); R++;
-        t.rows.forEach(r=>{ SCHEMA.PLAN_COLS.forEach((c,ci)=>put(R,ci,r[ci]||"",stVal)); for(let c=SCHEMA.PLAN_COLS.length;c<NC;c++) put(R,c,"",stVal); R++; }); R++;
+        s.head.forEach((c,ci)=>put(R,ci,c,stHdr)); for(let c=s.head.length;c<NC;c++) put(R,c,"",stHdr); R++;
+        t.rows.forEach(r=>{ r.forEach((v,ci)=>put(R,ci,v||"",stVal)); for(let c=r.length;c<NC;c++) put(R,c,"",stVal); R++; }); R++;
       });
     } else if(s.kind==="grid"){
       s.tabs.forEach(t=>{
         fullRow(s.title+(t.label?` — ${t.label}`:""), stSection);
-        padRow([s.sec.rowHeader||"", ...s.sec.columns], stHdr);
+        padRow(s.head, stHdr);
         t.rows.forEach(r=>padRow(r)); R++;
       });
     } else if(s.kind==="note"){
@@ -1174,11 +1231,10 @@ function exportClusterPDF(grp){
       if(s.shared.length) table(s.title, null, s.shared);
       if(s.diff.length) table(s.title+" — by enclave", ["", ...cx.labels], s.diff, {cols:n+1, columnStyles:{0:{cellWidth:110,fontStyle:"bold",fillColor:grey}}});
     } else if(s.kind==="plans"){
-      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), SCHEMA.PLAN_COLS,
-        t.rows.map(r=>SCHEMA.PLAN_COLS.map((c,ci)=>r[ci]||"")), {cols:SCHEMA.PLAN_COLS.length, columnStyles:{}}));
+      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), s.head, t.rows, {cols:s.head.length, columnStyles:{}}));
     } else if(s.kind==="grid"){
-      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), [s.sec.rowHeader||"", ...s.sec.columns],
-        t.rows, {cols:s.sec.columns.length+1, columnStyles:{0:{cellWidth:110,fontStyle:"bold",fillColor:grey}}}));
+      s.tabs.forEach(t=>table(s.title+(t.label?` — ${t.label}`:""), s.head,
+        t.rows, {cols:s.head.length, columnStyles:{0:{cellWidth:110,fontStyle:"bold",fillColor:grey}}}));
     } else if(s.kind==="note"){
       s.notes.forEach(nt=>table(s.title+(nt.label?` — ${nt.label}`:""), null, [[nt.text]], {cols:1, columnStyles:{0:{cellWidth:"auto"}}}));
     }
@@ -1324,7 +1380,7 @@ function diffCIS(pub, draft){
       });
       oldBy.forEach((r,k)=>{ if(!newBy.has(k)) out.plansRemoved.push(_planRowLabel(r)); });
     } else if(sec.kind==="grid"){
-      const gsig=d=>JSON.stringify([d[sec.key]||[], d.model_labels||[], (d.gridx||{})[sec.key]||{}]);
+      const gsig=d=>JSON.stringify([d[sec.key]||[], customLabels(sec,d), (d.gridx||{})[sec.key]||{}]);
       if(gsig(dOld)!==gsig(dNew))
         out.fields.push({sec:sec.title,label:"Table updated",from:"",to:""});
     } else if(sec.kind==="note"){
@@ -1704,8 +1760,8 @@ function renderTemplate(a){
   const active=T.map((s,i)=>({s,i})).filter(x=>!x.s.retired);
   const removed=T.map((s,i)=>({s,i})).filter(x=>x.s.retired);
   a.innerHTML=`
-    <div class="note"><b>Template</b> sets the sections and rows every community sheet uses. Changes go live for everyone when you press <b>Save template</b>.
-      Removing a row or section never deletes data: it disappears only from sheets where it's empty, and sheets that already have a value keep it and still show it. Removed items can be restored.</div>
+    <div class="note"><b>Template</b> sets the sections, rows and table columns every community sheet uses. Changes go live for everyone when you press <b>Save template</b>.
+      Removing a row, column or section never deletes data: it disappears only from sheets where it's empty, and sheets that already have a value keep it and still show it. Removed items can be restored.</div>
     <div class="bar">
       <button class="btn mini solid" id="tplSave" ${dirty&&!state.tplBusy?"":"disabled"}>${state.tplBusy?"Saving…":"Save template"}</button>
       <button class="btn mini ghost" id="tplDiscard" ${dirty&&!state.tplBusy?"":"disabled"}>Discard changes</button>
@@ -1726,6 +1782,46 @@ function renderTemplate(a){
   $("tplList").addEventListener("click",e=>{ const b=e.target.closest("[data-act]"); if(!b||b.disabled||state.tplBusy) return;
     tplAct(b.dataset.act, b.dataset.s!=null?+b.dataset.s:null, b.dataset.r!=null?+b.dataset.r:null); });
 }
+/* The two editable lists inside a section: rows ("r") and table columns ("c").
+   Both share one renderer and one set of actions; LIST says how each behaves. */
+const LIST = {
+  r: { name:"row", title:"Rows", get:s=>tplRowList(s), key:(s,x)=>s.id+"/"+tplRid(x),
+       use:(s,x)=>tplRowUse(s,x), locked:(s,x)=>s.kind==="kv"&&fieldLocked(x),
+       lockTip:"Required — can be renamed but not removed" },
+  c: { name:"column", title:"Columns", get:s=>(s.kind==="grid"||s.kind==="plans")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
+       use:(s,x)=>tplColUse(s,x), locked:(s,x)=>s.kind==="plans"&&(x.pos===0||x.pos===1),
+       lockTip:"Plan Number and Plan Name identify each plan — they can be renamed but not removed" }
+};
+function tplColUse(s,c){ return tplUse(d=>tableRows(s,d).some(r=>{ const v=(r||[])[c.pos]; return v!=null && String(v).trim()!==""; })); }
+function tplListHTML(s, si, t){
+  const L=LIST[t]; const list=L.get(s); if(!list) return "";
+  const act=list.map((x,i)=>({x,i})).filter(o=>!o.x.retired);
+  const rem=list.map((x,i)=>({x,i})).filter(o=>o.x.retired);
+  const table=(s.kind==="grid"||s.kind==="plans");
+  let h=table?`<div class="tpl-sub">${L.title}</div>`:"";
+  h+=`<table class="tpl-t">`;
+  // a table's first column holds each row's label — renameable, never removable
+  if(t==="c" && s.kind==="grid") h+=`<tr><td class="tpl-lbl">${esc(s.rowHeader)||'<span class="none">(no heading)</span>'}<span class="autotag">row labels</span></td>
+      <td class="tpl-use"></td><td class="tpl-acts"><button class="tbtn" data-act="hren" data-s="${si}">Rename</button></td></tr>`;
+  h+=act.map((o,n)=>{ const x=o.x; const lk=L.locked(s,x);
+    return `<tr><td class="tpl-lbl">${esc(x.label)||'<span class="none">(no label)</span>'}${
+        x.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${
+        state.tplNew[L.key(s,x)]?'<span class="autotag tpl-new">new</span>':""}</td>
+      <td class="tpl-use">${tplUseTxt(L.use(s,x))}</td>
+      <td class="tpl-acts">
+        <button class="tbtn" data-act="${t}up" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move ${t==="c"?"left":"up"}" aria-label="Move ${t==="c"?"left":"up"}">${t==="c"?"&#8592;":"&#8593;"}</button>
+        <button class="tbtn" data-act="${t}down" data-s="${si}" data-r="${o.i}" ${n<act.length-1?"":"disabled"} title="Move ${t==="c"?"right":"down"}" aria-label="Move ${t==="c"?"right":"down"}">${t==="c"?"&#8594;":"&#8595;"}</button>
+        <button class="tbtn" data-act="${t}ren" data-s="${si}" data-r="${o.i}">Rename</button>
+        ${lk?`<button class="tbtn" disabled title="${esc(L.lockTip)}" aria-label="Required ${L.name}">&times;</button>`
+            :`<button class="tbtn del" data-act="${t}del" data-s="${si}" data-r="${o.i}" title="Remove ${L.name}" aria-label="Remove ${esc(x.label)}">&times;</button>`}
+      </td></tr>`; }).join("");
+  if(!act.length) h+=`<tr><td colspan="3"><span class="none">No template ${L.name}s yet${t==="r"&&s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</span></td></tr>`;
+  h+=`<tr class="tpl-addrow"><td colspan="3"><button class="tbtn add" data-act="${t}add" data-s="${si}">+ Add ${L.name}</button></td></tr></table>`;
+  if(rem.length) h+=`<details class="tpl-removed-rows"><summary>Removed ${L.name}s (${rem.length})</summary><table class="tpl-t">${rem.map(o=>
+    `<tr><td class="tpl-lbl">${esc(o.x.label)}</td><td class="tpl-use">${tplUseTxt(L.use(s,o.x))}</td>
+      <td class="tpl-acts"><button class="tbtn" data-act="${t}restore" data-s="${si}" data-r="${o.i}">Restore</button></td></tr>`).join("")}</table></details>`;
+  return h;
+}
 function tplSecHTML(s, si, canUp, canDown){
   const locked=secLocked(s);
   let h=`<div class="panel tpl-sec"><div class="sec"><span>${esc(s.title)||'<i>(untitled)</i>'} <span class="tpl-kind">${TPL_KIND[s.kind]||""}</span>${state.tplNew[s.id]?' <span class="tpl-kind">new</span>':""}</span>
@@ -1735,31 +1831,11 @@ function tplSecHTML(s, si, canUp, canDown){
       <button data-act="sren" data-s="${si}">Rename</button>
       ${locked?`<button disabled title="Holds the community's identity fields, so it can't be removed">Remove</button>`:`<button data-act="sdel" data-s="${si}">Remove</button>`}
     </span></div>`;
-  if(s.kind==="plans") h+=`<div class="tpl-info">Plan rows are added on each sheet. Columns: ${SCHEMA.PLAN_COLS.map(esc).join(" · ")}</div>`;
+  if(s.kind==="plans") h+=`<div class="tpl-info">Plan rows are added on each sheet; the columns below apply to every sheet.</div>`;
   if(s.kind==="note")  h+=`<div class="tpl-info">A free-text notes box on each sheet.</div>`;
-  if(s.kind==="grid")  h+=`<div class="tpl-info">Columns: ${s.columns.map(esc).join(" · ")}. The rows below are offered on every sheet; each sheet can also add its own.</div>`;
-  const list=tplRowList(s);
-  if(list){
-    const act=list.map((r,ri)=>({r,ri})).filter(x=>!x.r.retired);
-    const rem=list.map((r,ri)=>({r,ri})).filter(x=>x.r.retired);
-    h+=`<table class="tpl-t">${act.map((x,n)=>{ const r=x.r; const lk=s.kind==="kv"&&fieldLocked(r);
-      return `<tr><td class="tpl-lbl">${esc(r.label)||'<span class="none">(no label)</span>'}${
-          r.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${
-          state.tplNew[tplRowKey(s,r)]?'<span class="autotag tpl-new">new</span>':""}</td>
-        <td class="tpl-use">${tplUseTxt(tplRowUse(s,r))}</td>
-        <td class="tpl-acts">
-          <button class="tbtn" data-act="rup" data-s="${si}" data-r="${x.ri}" ${n>0?"":"disabled"} title="Move up" aria-label="Move up">&#8593;</button>
-          <button class="tbtn" data-act="rdown" data-s="${si}" data-r="${x.ri}" ${n<act.length-1?"":"disabled"} title="Move down" aria-label="Move down">&#8595;</button>
-          <button class="tbtn" data-act="rren" data-s="${si}" data-r="${x.ri}">Rename</button>
-          ${lk?`<button class="tbtn" disabled title="Required — can be renamed but not removed" aria-label="Required row">&times;</button>`
-              :`<button class="tbtn del" data-act="rdel" data-s="${si}" data-r="${x.ri}" title="Remove row" aria-label="Remove ${esc(r.label)}">&times;</button>`}
-        </td></tr>`; }).join("")}
-      ${!act.length?`<tr><td colspan="3"><span class="none">No template rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</span></td></tr>`:""}
-      <tr class="tpl-addrow"><td colspan="3"><button class="tbtn add" data-act="radd" data-s="${si}">+ Add row</button></td></tr></table>`;
-    if(rem.length) h+=`<details class="tpl-removed-rows"><summary>Removed rows (${rem.length})</summary><table class="tpl-t">${rem.map(x=>
-      `<tr><td class="tpl-lbl">${esc(x.r.label)}</td><td class="tpl-use">${tplUseTxt(tplRowUse(s,x.r))}</td>
-        <td class="tpl-acts"><button class="tbtn" data-act="rrestore" data-s="${si}" data-r="${x.ri}">Restore</button></td></tr>`).join("")}</table></details>`;
-  }
+  if(s.kind==="grid")  h+=`<div class="tpl-info">The rows below are offered on every sheet; each sheet can also add its own rows.</div>`;
+  h+=tplListHTML(s, si, "c");
+  h+=tplListHTML(s, si, "r");
   return h+`</div>`;
 }
 /* swap arr[i] with the nearest non-retired neighbour in direction dir */
@@ -1768,23 +1844,58 @@ function tplMove(arr, i, dir){
   if(j<0 || j>=arr.length) return;
   const t=arr[i]; arr[i]=arr[j]; arr[j]=t;
 }
+/* Add section: a label/value list, or a table with its own rows and columns */
+async function tplAddSection(T){
+  const r=await openModal({ title:"Add section",
+    body:`<label class="fld">Section title</label>
+      <input type="text" class="modal-input" id="nsTitle" placeholder="e.g. HOA Requirements">
+      <label class="fld" style="margin-top:12px">Type</label>
+      <div class="ns-kinds">
+        <label><input type="radio" name="nsKind" value="kv" checked> <b>Fields</b> <span class="hint">— a label / value list</span></label>
+        <label><input type="radio" name="nsKind" value="grid"> <b>Table</b> <span class="hint">— rows × columns</span></label>
+      </div>
+      <div id="nsTbl" class="hidden">
+        <label class="fld" style="margin-top:12px">Columns <span class="hint">(comma-separated — you can change them later)</span></label>
+        <input type="text" class="modal-input" id="nsCols" placeholder="e.g. Vendor, Contact, Phone">
+        <label class="fld" style="margin-top:12px">Heading for the row-label column</label>
+        <input type="text" class="modal-input" id="nsHead" placeholder="e.g. Item">
+      </div>`,
+    buttons:[{label:"Cancel",value:null},
+      {label:"Add",primary:true,value:card=>({ title:card.querySelector("#nsTitle").value.trim(),
+        kind:(card.querySelector('input[name="nsKind"]:checked')||{}).value||"kv",
+        cols:card.querySelector("#nsCols").value, head:card.querySelector("#nsHead").value.trim() })}] ,
+  }).catch(()=>null);
+  return r;
+}
 async function tplAct(act, si, ri){
   const T=tplWork();
   if(act==="sadd"){
-    const v=await uiPrompt("Section title",{title:"Add section",okText:"Add",placeholder:"e.g. HOA Requirements"});
-    if(!v) return;
-    if(T.some(s=>!s.retired && lc(s.title).trim()===lc(v))){ uiAlert(`There's already a section called "${v}".`,"Add section"); return; }
-    const s={ id:rid("s_"), title:v, kind:"kv", fields:[] };
+    const pending=tplAddSection(T);
+    // show/hide the table options as the type changes (the modal is already in the DOM)
+    const cards=document.querySelectorAll(".modal-card"); const card=cards[cards.length-1];
+    if(card){ card.querySelectorAll('input[name="nsKind"]').forEach(rb=>rb.onchange=()=>
+      card.querySelector("#nsTbl").classList.toggle("hidden", rb.value!=="grid" || !rb.checked)); }
+    const v=await pending;
+    if(!v || !v.title) return;
+    if(T.some(s=>!s.retired && lc(s.title).trim()===lc(v.title))){ uiAlert(`There's already a section called "${v.title}".`,"Add section"); return; }
+    let s;
+    if(v.kind==="grid"){
+      const names=String(v.cols||"").split(",").map(x=>x.trim()).filter(Boolean);
+      const cols=(names.length?names:["Value"]).map((label,pos)=>({label,pos}));
+      s={ id:rid("s_"), title:v.title, kind:"grid", key:rid("t_"), rowHeader:v.head||"Item",
+          rows:[], presetBase:0, columns:cols, colNext:cols.length };
+    } else s={ id:rid("s_"), title:v.title, kind:"kv", fields:[] };
     // new sections go just above Notes when Notes is the last active section
     let at=T.length; for(let i=T.length-1;i>=0;i--){ if(T[i].retired) continue; if(T[i].kind==="note") at=i; break; }
     T.splice(at,0,s); state.tplNew[s.id]=1;
     return tplRepaint();
   }
   const s=T[si]; if(!s) return;
-  const list=tplRowList(s);
   if(act==="sup"||act==="sdown") tplMove(T, si, act==="sup"?-1:1);
   else if(act==="sren"){
     const v=await uiPrompt("Section title",{title:"Rename section",okText:"Rename",value:s.title}); if(!v) return; s.title=v; }
+  else if(act==="hren"){
+    const v=await uiPrompt("Heading for the row-label column",{title:"Rename column",okText:"Rename",value:s.rowHeader}); if(v==null) return; s.rowHeader=v; }
   else if(act==="sdel"){
     if(secLocked(s)) return;
     if(state.tplNew[s.id]){ T.splice(si,1); delete state.tplNew[s.id]; return tplRepaint(); }
@@ -1795,38 +1906,43 @@ async function tplAct(act, si, ri){
     s.retired=true;
   }
   else if(act==="srestore") delete s.retired;
-  else if(!list) return;
-  else if(act==="radd"){
-    const v=await uiPrompt(`New row in "${s.title}"`,{title:"Add row",okText:"Add",placeholder:s.kind==="grid"?"e.g. Model Home Plan 4":"e.g. Fence Type"});
-    if(!v) return;
-    const hit=list.find(r=>lc(r.label).trim()===lc(v));
-    if(hit && !hit.retired){ uiAlert(`"${s.title}" already has a row called "${hit.label}".`,"Add row"); return; }
-    if(hit && hit.retired){
-      if(await uiConfirm(`"${hit.label}" was removed from this section earlier. Restore it instead? Any values sheets already have come back with it.`,{title:"Restore row",okText:"Restore"})) delete hit.retired;
+  else {
+    const t=act[0], op=act.slice(1); const L=LIST[t]; const list=L&&L.get(s); if(!list) return;
+    const W=L.name, Wc=W[0].toUpperCase()+W.slice(1);
+    if(op==="add"){
+      const v=await uiPrompt(`New ${W} in "${s.title}"`,{title:`Add ${W}`,okText:"Add",
+        placeholder:t==="c"?"e.g. Notes":s.kind==="grid"?"e.g. Model Home Plan 4":"e.g. Fence Type"});
+      if(!v) return;
+      const hit=list.find(x=>lc(x.label).trim()===lc(v));
+      if(hit && !hit.retired){ uiAlert(`"${s.title}" already has a ${W} called "${hit.label}".`,`Add ${W}`); return; }
+      if(hit && hit.retired){
+        if(await uiConfirm(`"${hit.label}" was removed from this section earlier. Restore it instead? Any values sheets already have come back with it.`,{title:`Restore ${W}`,okText:"Restore"})) delete hit.retired;
+        return tplRepaint();
+      }
+      // columns take the next never-used cell slot; rows get a fresh key
+      const x = t==="c" ? { label:v, pos:s.colNext++ } : { k:rid(s.kind==="kv"?"c_":"r_"), label:v };
+      list.push(x); state.tplNew[L.key(s,x)]=1;
       return tplRepaint();
     }
-    const r={ k:rid(s.kind==="kv"?"c_":"r_"), label:v };
-    list.push(r); state.tplNew[tplRowKey(s,r)]=1;
-  }
-  else {
-    const r=list[ri]; if(!r) return;
-    if(act==="rup"||act==="rdown") tplMove(list, ri, act==="rup"?-1:1);
-    else if(act==="rren"){
-      const v=await uiPrompt("Row label",{title:"Rename row",okText:"Rename",value:r.label}); if(!v) return;
-      if(list.some(x=>x!==r && !x.retired && lc(x.label).trim()===lc(v))){ uiAlert(`"${s.title}" already has a row called "${v}".`,"Rename row"); return; }
-      r.label=v;
+    const x=list[ri]; if(!x) return;
+    if(op==="up"||op==="down") tplMove(list, ri, op==="up"?-1:1);
+    else if(op==="ren"){
+      const v=await uiPrompt(`${Wc} label`,{title:`Rename ${W}`,okText:"Rename",value:x.label}); if(!v) return;
+      if(list.some(y=>y!==x && !y.retired && lc(y.label).trim()===lc(v))){ uiAlert(`"${s.title}" already has a ${W} called "${v}".`,`Rename ${W}`); return; }
+      x.label=v;
     }
-    else if(act==="rdel"){
-      if(s.kind==="kv" && fieldLocked(r)) return;
-      const key=tplRowKey(s,r);
+    else if(op==="del"){
+      if(L.locked(s,x)) return;
+      if(t==="c" && list.filter(y=>!y.retired).length<=1){ uiAlert("A table needs at least one column. Add another column first.","Remove column"); return; }
+      const key=L.key(s,x);
       if(state.tplNew[key]){ list.splice(ri,1); delete state.tplNew[key]; return tplRepaint(); }
-      const n=tplRowUse(s,r);
-      if(!(await uiConfirm(`Remove "${r.label}" from ${s.title}? ${n
-          ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} a value — ${n===1?"that sheet keeps it and still shows":"those sheets keep it and still show"} the row.`
-          : "No sheet has a value in it."} You can restore it later.`,{title:"Remove row",okText:"Remove"}))) return;
-      r.retired=true;
+      const n=L.use(s,x);
+      if(!(await uiConfirm(`Remove the ${W} "${x.label}" from ${s.title}? ${n
+          ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} a value in it — ${n===1?"that sheet keeps it and still shows":"those sheets keep it and still show"} the ${W}.`
+          : `No sheet has a value in it.`} You can restore it later.`,{title:`Remove ${W}`,okText:"Remove"}))) return;
+      x.retired=true;
     }
-    else if(act==="rrestore") delete r.retired;
+    else if(op==="restore") delete x.retired;
   }
   tplRepaint();
 }
@@ -1839,7 +1955,7 @@ async function tplDiscard(){
 async function tplSave(){
   const T=state.tpl; if(!T || !tplDirty() || state.tplBusy) return;
   if(DEMO||!sb){ uiAlert("Not connected to the database.","Save template"); return; }
-  if(T.some(s=>!String(s.title||"").trim()) || T.some(s=>(tplRowList(s)||[]).some(r=>!String(r.label||"").trim()))){
+  if(T.some(s=>!String(s.title||"").trim()) || T.some(s=>(tplRowList(s)||[]).concat(s.columns||[]).some(r=>!String(r.label||"").trim()))){
     uiAlert("Every section and row needs a label before saving.","Save template"); return; }
   const sum=tplChangeSummary(SCHEMA.SECTIONS, T);
   if(!(await uiConfirm(`Save the template? It applies to every community sheet right away.${sum?` Changes: ${sum}.`:""}`,{title:"Save template",okText:"Save template"}))) return;
@@ -1869,7 +1985,7 @@ async function tplSave(){
 /* short human summary of what changed, for the save confirmation */
 function tplChangeSummary(before, after){
   const B=new Map(before.map(s=>[s.id,s]));
-  let addS=0, remS=0, addR=0, remR=0, ren=0, moved=false;
+  let addS=0, remS=0, addR=0, remR=0, addC=0, remC=0, ren=0, moved=false;
   const both=new Set(after.filter(s=>!s.retired && B.has(s.id) && !B.get(s.id).retired).map(s=>s.id));
   if(before.filter(s=>both.has(s.id)).map(s=>s.id).join()!==after.filter(s=>both.has(s.id)).map(s=>s.id).join()) moved=true;
   after.forEach(s=>{ const o=B.get(s.id);
@@ -1877,16 +1993,21 @@ function tplChangeSummary(before, after){
     if(!o.retired && s.retired) remS++;
     if(o.retired && !s.retired) addS++;
     if(o.title!==s.title) ren++;
-    const ol=tplRowList(o)||[], nl=tplRowList(s)||[];
-    const OB=new Map(ol.map(r=>[tplRid(r),r]));
-    nl.forEach(r=>{ const x=OB.get(tplRid(r));
-      if(!x){ if(!r.retired) addR++; return; }
-      if(!x.retired && r.retired) remR++;
-      if(x.retired && !r.retired) addR++;
-      if(x.label!==r.label) ren++; });
-    const was=ol.filter(r=>!r.retired).map(tplRid).filter(k=>nl.some(r=>!r.retired&&tplRid(r)===k)).join(",");
-    const now=nl.filter(r=>!r.retired && OB.has(tplRid(r)) && !OB.get(tplRid(r)).retired).map(tplRid).join(",");
-    if(was!==now) moved=true;
+    if(o.kind==="grid" && o.rowHeader!==s.rowHeader) ren++;
+    [["r",x=>tplRowList(x)],["c",x=>(x.kind==="grid"||x.kind==="plans")?x.columns:null]].forEach(([t,get])=>{
+      const ol=get(o)||[], nl=get(s)||[];
+      const id=r=>t==="c"?"c"+r.pos:tplRid(r);
+      const OB=new Map(ol.map(r=>[id(r),r]));
+      const add=()=>{ if(t==="c") addC++; else addR++; }, rem=()=>{ if(t==="c") remC++; else remR++; };
+      nl.forEach(r=>{ const x=OB.get(id(r));
+        if(!x){ if(!r.retired) add(); return; }
+        if(!x.retired && r.retired) rem();
+        if(x.retired && !r.retired) add();
+        if(x.label!==r.label) ren++; });
+      const was=ol.filter(r=>!r.retired).map(id).filter(k=>nl.some(r=>!r.retired&&id(r)===k)).join(",");
+      const now=nl.filter(r=>!r.retired && OB.has(id(r)) && !OB.get(id(r)).retired).map(id).join(",");
+      if(was!==now) moved=true;
+    });
   });
   const p=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
   const parts=[];
@@ -1894,6 +2015,8 @@ function tplChangeSummary(before, after){
   if(remS) parts.push(p(remS,"section")+" removed");
   if(addR) parts.push(p(addR,"row")+" added");
   if(remR) parts.push(p(remR,"row")+" removed");
+  if(addC) parts.push(p(addC,"column")+" added");
+  if(remC) parts.push(p(remC,"column")+" removed");
   if(ren)  parts.push(p(ren,"rename"));
   if(moved) parts.push("reordered");
   return parts.join(", ");

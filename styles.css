@@ -364,3 +364,12 @@ td.rowx .rowdel:hover,td.rowx .rowdel:focus-visible{opacity:1;background:var(--e
   .tpl-t td.tpl-acts{padding:4px 6px}
   .tbtn{padding:3px 7px}
 }
+.tpl-sub{padding:7px 14px 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);border-bottom:1px solid var(--line)}
+.tpl-sec .tpl-t + .tpl-sub,.tpl-sec .tpl-removed-rows + .tpl-sub{border-top:1px solid var(--line)}
+.ns-kinds{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.ns-kinds label{display:flex;align-items:baseline;gap:6px;cursor:pointer;font-size:13.5px}
+/* template-created tables: a label column plus even value columns */
+.grid-t td:first-child,.grid-t th:first-child{width:170px}
+.grid-t td:nth-child(n+2),.grid-t th:nth-child(n+2){width:auto}
+.grid-t{min-width:0}
+.grid-t td.rowx{width:34px}

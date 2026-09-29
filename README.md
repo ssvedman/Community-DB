@@ -38,19 +38,22 @@ on a 1080p display while conserving free-tier storage.
 
 ## Template editor
 
-**Template** (editors and admins, Maker side) edits the sections and rows every CIS sheet uses: add, rename,
-reorder and remove sections and rows. Nothing changes for anyone until **Save template**.
+**Template** (editors and admins, Maker side) edits the sections, rows and table columns every CIS
+sheet uses: add, rename, reorder and remove each of them. **Add section** makes either a label/value
+list or a table (rows × columns). Floor Plans, the Model table and any new table have editable columns. Nothing changes for anyone until **Save template**.
 Requires `add_template.sql` (run once); until the first save, the default layout in `config.js` is used.
 
 Template changes never touch community data:
 
-- **Removing** a row or section hides it only on sheets where it's empty. Sheets that already have a
+- **Removing** a row, column or section hides it only on sheets where it's empty. Sheets that already have a
   value keep it and still show (and export) it. Removed items are listed under **Removed rows /
   sections** and can be **restored**, which brings their values straight back.
 - **New** rows get fresh keys, so they never collide with existing data. New Model-table rows store
   their cells separately (`data.gridx`), so the original rows and each sheet's own custom rows never shift.
-- Identity fields (Community Name, JDE, Project Name, Product Type) and the auto Revision Date can be
-  renamed but not removed.
+- **Columns** keep a fixed storage slot that is never reused, so adding, reordering or removing a
+  column never moves a value. A removed column still shows on sheets where any row has a value in it.
+- Identity fields (Community Name, JDE, Project Name, Product Type), the auto Revision Date, and the
+  Plan Number / Plan Name columns can be renamed but not removed.
 - Every save writes a snapshot to `cdb_template_revisions`. Saving over someone else's newer save asks first.
 
 ## Files
