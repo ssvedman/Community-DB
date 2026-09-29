@@ -52,8 +52,10 @@ layout in `config.js` is used.
 - New rows get fresh keys and every column keeps a fixed storage slot that is never reused, so adding,
   reordering or removing rows and columns never moves an existing value.
 - Identity fields (Community Name, JDE, Project Name, Product Type), the auto Revision Date, and the
-  Plan Number / Plan Name columns can be renamed but not removed. Label/value sections keep a single
-  Value column.
+  Plan Number / Plan Name columns can be renamed but not removed.
+- Every section except Notes can take extra columns. On label/value sections the original **Value**
+  column stays put (renameable, not removable) and extra columns store in `data.fc`; a section with only
+  its Value column looks exactly as before.
 - Every save writes a snapshot to `cdb_template_revisions`. Saving over someone else's newer save asks first.
 
 ## Files

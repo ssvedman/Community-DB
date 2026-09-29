@@ -73,7 +73,8 @@ function normTemplate(secs){
       if(!s.key) s.key=s.id;
       s.rowHeader=String(s.rowHeader==null?"":s.rowHeader);
     }
-    if(s.kind==="grid" || s.kind==="plans"){
+    if(s.kind==="kv"){ s.rowHeader=String(s.rowHeader==null?"":s.rowHeader); if(!Array.isArray(s.columns)) s.columns=[{label:"Value",pos:0}]; }
+    if(s.kind==="grid" || s.kind==="plans" || s.kind==="kv"){
       s.columns=normCols(s.kind==="plans" && !Array.isArray(s.columns) ? SCHEMA.PLAN_COLS : s.columns);
       const hi=s.columns.reduce((m,c)=>Math.max(m,c.pos+1),0);
       s.colNext=Math.max(typeof s.colNext==="number"?s.colNext:0, hi);
@@ -86,9 +87,17 @@ function colsFor(sec, datas){
   const hasCol=pos=>datas.some(d=>tableRows(sec,d).some(r=>{ const v=r[pos]; return v!=null && String(v).trim()!==""; }));
   return (sec.columns||[]).filter(c=>!c.retired || hasCol(c.pos));
 }
-/* raw cell arrays of a table section for one record (plans rows, or every grid row) */
+/* Label/value rows as cell arrays by column slot: slot 0 is the original value
+   (d.f[k]); extra columns live in d.fc[k][slot]. Imported extra lines keep
+   theirs in the pair itself: [label, slot0, slot1, …]. */
+function kvCells(d,f){ const fc=(((d||{}).fc||{})[f.k]); const out=Array.isArray(fc)?fc.slice():[]; out[0]=fval(d||{},f.k); return out; }
+const kvExCells = pair => Array.isArray(pair)?pair.slice(1):[];
+/* one-line text of a label/value row across the given columns (diffs, compare, cluster export) */
+function kvText(cells, cols){ return cols.map(c=>String(cells[c.pos]==null?"":cells[c.pos]).trim()).filter(Boolean).join(" · "); }
+/* raw cell arrays of a table section for one record (plans rows, grid rows, or label/value rows) */
 function tableRows(sec, d){
   d=d||{};
+  if(sec.kind==="kv") return (sec.fields||[]).map(f=>kvCells(d,f)).concat(((d.extra||{})[sec.id]||[]).map(kvExCells));
   if(sec.kind==="plans") return Array.isArray(d.plans)?d.plans.filter(Array.isArray):[];
   if(sec.kind==="grid") return gridAll(sec,d).map(r=>r.cells);
   return [];
@@ -335,7 +344,8 @@ function itemHay(it){
   if(d.f) for(const k in d.f) parts.push(d.f[k]);
   if(Array.isArray(d.plans)) d.plans.forEach(r=>Array.isArray(r)&&r.forEach(c=>parts.push(c)));
   if(d.note) parts.push(d.note);
-  if(d.extra) for(const s in d.extra) (d.extra[s]||[]).forEach(pr=>{ parts.push(pr[0]); parts.push(pr[1]); });
+  if(d.extra) for(const s in d.extra) (d.extra[s]||[]).forEach(pr=>{ if(Array.isArray(pr)) pr.forEach(c=>parts.push(c)); });
+  if(d.fc) for(const k in d.fc) (Array.isArray(d.fc[k])?d.fc[k]:[]).forEach(c=>parts.push(c));
   return lc(parts.join(" "));
 }
 function visibleItems(){
@@ -605,7 +615,7 @@ function gridAll(sec, d){
 /* does this record hold anything in this section? (drives retired-section visibility) */
 function secHasData(sec, d){
   d=d||{};
-  if(sec.kind==="kv") return (sec.fields||[]).some(f=>fval(d,f.k)) || ((d.extra||{})[sec.id]||[]).some(p=>p&&String(p[1]||"").trim());
+  if(sec.kind==="kv") return tableRows(sec,d).some(hasCells);
   if(sec.kind==="plans") return Array.isArray(d.plans) && d.plans.length>0;
   if(sec.kind==="grid") return gridAll(sec,d).some(r=>hasCells(r.cells) || (r.type==="custom" && String(r.label||"").trim()));
   if(sec.kind==="note") return String(d.note==null?"":d.note).trim()!=="";
@@ -624,17 +634,7 @@ function rowXCell(editing, on, attrs, label, shared){
    (which puts an enclave dropdown in the header) share the exact same bodies.
    Returns {btn, body}; body==="" means the section is hidden for this record. */
 function sectionParts(sec, d, editing, id){
-  if(sec.kind==="kv"){
-    let rows=sec.fields.map(f=>{ const v=fval(d,f.k); if(!v && (!editing || f.readonly || f.retired)) return "";
-      const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v)
-                 : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>` : esc(v));
-      return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp||'<span class="none">—</span>'}</td>${
-        rowXCell(editing, kvRemovable(f,v), `data-kvdel="f.${esc(f.k)}"`, f.label)}</tr>`; }).join("");
-    const ex=(d.extra&&d.extra[sec.id])||[];
-    ex.forEach((pair,xi)=>{ const v=pair[1]||""; rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v):esc(v)}</td>${
-      rowXCell(editing, true, `data-xdel="${esc(sec.id)}.${xi}"`, pair[0]||"this line")}</tr>`; });
-    return { btn:"", body: rows?`<table>${rows}</table>`:(editing?`<table></table>`:"") };
-  }
+  if(sec.kind==="kv") return { btn:"", body:kvBody(sec, d, id, editing, null) };
   if(sec.kind==="plans"){
     const arr=Array.isArray(d.plans)?d.plans:[]; const cols=colsFor(sec,[d]);
     if(!arr.length && !editing) return { btn:"", body:"" };
@@ -705,7 +705,8 @@ function clusterContext(grp){
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
       let dif=false;
-      (sec.fields||[]).forEach(f=>{ const vals=datas.map(d=>fval(d,f.k)); const dd=!same(vals);
+      const sig=cells=>{ const a=cells.map(S); while(a.length && a[a.length-1]==="") a.pop(); return a.join("\u0001"); };
+      (sec.fields||[]).forEach(f=>{ const vals=datas.map(d=>sig(kvCells(d,f))); const dd=!same(vals);
         cx.fieldDiff[f.k]=dd; if(dd && f.k!=="rev_date") dif=true; });   // rev_date is a publish stamp — never the reason for a dropdown
       const exJ=datas.map(d=>JSON.stringify((d.extra||{})[sec.id]||[]));
       cx.extraDiff[sec.id]=!exJ.every(x=>x===exJ[0]);
@@ -722,27 +723,41 @@ function encWrapHTML(grp, act){
   return `<span class="enc-wrap">Enclave<select class="enc-sel" data-encsel>${opts}<option value="__cmp"${state.encCompare?" selected":""}>Compare all</option></select></span>`;
 }
 function encTag(lbl){ return `<span class="enctag">${esc(lbl)}</span>`; }
-/* kv body for a cluster: shared rows render once (editing asks all-or-one), rows
-   that differ show the selected enclave's value with a small enclave tag. */
-function kvClusterBody(sec, cx, ai, editing){
-  const d=cx.datas[ai]; const id=cx.grp.items[ai].id; const lbl=cx.labels[ai];
+/* Label/value section body, for a single sheet (cx=null) or one enclave of a
+   cluster (cx={datas, fieldDiff, exDiff, lbl}). With just the Value column it is
+   the classic two-column list; extra template columns add a header row and one
+   cell per column. In a cluster, shared rows render once (editing asks all-or-one)
+   and rows that differ carry a small enclave tag. */
+function kvBody(sec, d, id, editing, cx){
+  const cols=colsFor(sec, cx?cx.datas:[d]); const multi=cols.length>1;
+  const tag=fd=>(cx&&fd)?encTag(cx.lbl):"";
   let rows=sec.fields.map(f=>{
-    const v=fval(d,f.k); const fd=!!cx.fieldDiff[f.k];
-    if(!v && !editing && !fd) return "";                            // shared blank: hidden as always
-    if(!v && f.retired) return "";                                  // removed from the template: only filled sheets keep it
-    const showDash = !v && !editing && fd;                          // differs elsewhere: keep the row so switching enclaves makes sense
-    const disp = (editing && !f.readonly) ? evCell(id,"f."+f.k,v,!fd)
-               : (f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>`
-                             : (esc(v)||(showDash?'<span class="none">—</span>':"")));
-    if(!disp) return "";
-    return `<tr><td class="k">${esc(f.label)}</td><td class="v">${disp}${fd?encTag(lbl):""}</td>${
-      rowXCell(editing, kvRemovable(f,v), `data-kvdel="f.${esc(f.k)}"`, f.label, !fd)}</tr>`; }).join("");
-  const exDiff=!!cx.extraDiff[sec.id];
-  const ex=(d.extra&&d.extra[sec.id])||[];
-  ex.forEach((pair,xi)=>{ const v=pair[1]||"";
-    rows+=`<tr><td class="k">${esc(pair[0])}</td><td class="v">${editing?evCell(id,"x."+sec.id+"."+xi,v,!exDiff):esc(v)}${exDiff?encTag(lbl):""}</td>${
-      rowXCell(editing, true, `data-xdel="${esc(sec.id)}.${xi}"`, pair[0]||"this line", !exDiff)}</tr>`; });
-  return rows?`<table>${rows}</table>`:(editing?`<table></table>`:"");
+    const cells=kvCells(d,f); const has=hasCells(cells); const fd=cx?!!cx.fieldDiff[f.k]:false;
+    if(!has && (f.retired || (!editing && !fd) || (editing && f.readonly && !fd))) return "";
+    const shared=!!cx && !fd;
+    const td=(c,last)=>{ const v=String(cells[c.pos]==null?"":cells[c.pos]);
+      let h;
+      if(c.pos===0) h = (editing && !f.readonly) ? evCell(id,"f."+f.k,v,shared)
+                      : f.readonly ? `${esc(v)||'<span class="none">—</span>'}<span class="autotag">auto</span>`
+                      : (esc(v)||'<span class="none">—</span>');
+      else h = editing ? evCell(id,`fc.${f.k}.${c.pos}`,v,shared) : (esc(v)||(multi?"":'<span class="none">—</span>'));
+      return `<td class="v">${h}${last?tag(fd):""}</td>`; };
+    return `<tr><td class="k">${esc(f.label)}</td>${cols.map((c,i)=>td(c,i===cols.length-1)).join("")}${
+      rowXCell(editing, kvRemovable(f,has?"1":""), `data-kvdel="f.${esc(f.k)}"`, f.label, shared)}</tr>`; }).join("");
+  const exDiff=cx?!!cx.exDiff:false;
+  ((d.extra&&d.extra[sec.id])||[]).forEach((pair,xi)=>{ const cells=kvExCells(pair);
+    rows+=`<tr><td class="k">${esc(pair[0])}</td>${cols.map((c,i)=>{ const v=String(cells[c.pos]==null?"":cells[c.pos]);
+        const path=c.pos===0?`x.${sec.id}.${xi}`:`xc.${sec.id}.${xi}.${c.pos}`;
+        return `<td class="v">${editing?evCell(id,path,v,!!cx&&!exDiff):esc(v)}${i===cols.length-1?tag(exDiff):""}</td>`; }).join("")}${
+      rowXCell(editing, true, `data-xdel="${esc(sec.id)}.${xi}"`, pair[0]||"this line", !!cx&&!exDiff)}</tr>`; });
+  if(!rows) return editing?`<table></table>`:"";
+  if(!multi) return `<table>${rows}</table>`;
+  const head=`<tr><th>${esc(sec.rowHeader||"")}</th>${cols.map(c=>`<th class="nowrap">${esc(c.label)}</th>`).join("")}${editing?"<th></th>":""}</tr>`;
+  return `<div class="tscroll"><table class="kv-multi">${head}${rows}</table></div>`;
+}
+function kvClusterBody(sec, cx, ai, editing){
+  return kvBody(sec, cx.datas[ai], cx.grp.items[ai].id, editing,
+    { datas:cx.datas, fieldDiff:cx.fieldDiff, exDiff:cx.extraDiff[sec.id], lbl:cx.labels[ai] });
 }
 /* read-only side-by-side of just the values that differ inside one section */
 function compareBody(sec, cx){
@@ -754,12 +769,13 @@ function compareBody(sec, cx){
   let head=`<tr><th style="min-width:170px"></th>${cx.labels.map(l=>`<th>${esc(l)}</th>`).join("")}</tr>`;
   let rows="";
   if(sec.kind==="kv"){
+    const kc=colsFor(sec,cx.datas);
     (sec.fields||[]).forEach(f=>{ if(!cx.fieldDiff[f.k]) return;
-      rows+=`<tr><td class="k">${esc(f.label)}</td>${tds(cx.datas.map(d=>fval(d,f.k)))}</tr>`; });
+      rows+=`<tr><td class="k">${esc(f.label)}</td>${tds(cx.datas.map(d=>kvText(kvCells(d,f),kc)))}</tr>`; });
     if(cx.extraDiff[sec.id]){
       const lists=cx.datas.map(d=>(d.extra||{})[sec.id]||[]);
       const labels=[]; lists.forEach(l=>l.forEach(p=>{ if(!labels.some(x=>lc(x)===lc(p[0]))) labels.push(p[0]); }));
-      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?p[1]:""; });
+      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?kvText(kvExCells(p),kc):""; });
         if(vals.every(v=>S(v)===S(vals[0]))) return;
         rows+=`<tr><td class="k">${esc(L)}</td>${tds(vals)}</tr>`; });
     }
@@ -879,6 +895,8 @@ function beginDateEdit(sp,id,path,cur,shared){
 function getPath(id,path){ const it=itemById(id); const row=it.draft||it.pub; const d=(row&&row.data)||{};
   const p=path.split("."); const kind=p[0];
   if(kind==="f") return (d.f||{})[p[1]];
+  if(kind==="fc"){ const r=(d.fc||{})[p[1]]; return Array.isArray(r)?r[+p[2]]:""; }
+  if(kind==="xc"){ const pair=((d.extra||{})[p[1]]||[])[+p[2]]||[]; return pair[+p[3]+1]; }
   if(kind==="note") return d.note||"";
   if(kind==="p"){ const r=(d.plans||[])[+p[1]]||[]; return r[+p[2]]; }
   if(kind==="g"){ const r=(Array.isArray(d[p[1]])?d[p[1]]:[])[+p[2]]||[]; return r[+p[3]]; }
@@ -895,6 +913,11 @@ async function setPath(id,path,value){
     if(p[1]===I.name) row.name=value; if(p[1]===I.jde) row.jde=value;
     if(p[1]===I.project) row.project_name=value; if(p[1]===I.product) row.hub=value;
   }
+  else if(kind==="fc"){ d.fc=d.fc||{}; const r=d.fc[p[1]]=Array.isArray(d.fc[p[1]])?d.fc[p[1]]:[];
+    while(r.length<=+p[2]) r.push(""); r[+p[2]]=value; }
+  else if(kind==="fcx"){ if(d.fc) delete d.fc[p[1]]; }            // clears a line's extra-column cells
+  else if(kind==="xc"){ d.extra=d.extra||{}; const pair=((d.extra[p[1]]||[])[+p[2]]); if(Array.isArray(pair)){
+    while(pair.length<=+p[3]+1) pair.push(""); pair[+p[3]+1]=value; } }
   else if(kind==="note") d.note=value;
   else if(kind==="p"){ d.plans=d.plans||[]; const r=d.plans[+p[1]]=d.plans[+p[1]]||[];
     while(r.length<planSec().colNext) r.push(""); r[+p[2]]=value; }
@@ -972,7 +995,8 @@ async function delScope(id, shared, what){
 }
 async function kvDel(id, path, shared, label){
   const ids=await delScope(id, shared, label); if(!ids) return;
-  for(const x of ids) await setPath(x, path, "");
+  for(const x of ids){ await setPath(x, path, "");
+    const k=path.split(".")[1]; if(path.startsWith("f.") && ((((itemById(x)||{}).draft||{}).data||{}).fc||{})[k]) await setPath(x, "fcx."+k, ""); }
   openDetail(id);
 }
 async function xDel(id, secId, xi, shared, label){
@@ -1006,7 +1030,7 @@ function exportCIS(id){
   if(!window.XLSX){ uiAlert("Spreadsheet library didn't load — refresh and try again.","Export"); return; }
   const it=itemById(id); const row=shownRow(it); if(!row) return; const d=row.data||{};
   // wide enough for the widest table (plans columns, or row label + table columns)
-  const NC=Math.max(5, ...SCHEMA.SECTIONS.map(sc=>sc.kind==="plans"?colsFor(sc,[d]).length:sc.kind==="grid"?colsFor(sc,[d]).length+1:0));
+  const NC=Math.max(5, ...SCHEMA.SECTIONS.map(sc=>sc.kind==="plans"?colsFor(sc,[d]).length:(sc.kind==="grid"||sc.kind==="kv")?colsFor(sc,[d]).length+1:0));
   const BORDER={ style:"thin", color:{rgb:"D8DEE8"} }, BOX={top:BORDER,bottom:BORDER,left:BORDER,right:BORDER};
   const stTitle ={ font:{bold:true, sz:15, color:{rgb:"1F3864"}} };
   const stSection={ font:{bold:true, sz:11, color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"2E5C8A"}}, alignment:{vertical:"center"} };
@@ -1024,11 +1048,17 @@ function exportCIS(id){
   fullRow(row.name||"(untitled)", stTitle); R++;   // title + blank row
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
-      const fields=sec.fields.filter(f=>fval(d,f.k)); const ex=(d.extra&&d.extra[sec.id])||[];
-      if(!fields.length && !ex.length) return;
+      const lines=sec.fields.map(f=>[f.label, kvCells(d,f)]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr)]))
+        .filter(l=>hasCells(l[1]));
+      if(!lines.length) return;
       fullRow(sec.title, stSection);
-      fields.forEach(f=>kv(f.label, fval(d,f.k)));
-      ex.forEach(pr=>kv(pr[0], pr[1]||"")); R++;
+      const kc=colsFor(sec,[d]);
+      if(kc.length<2) lines.forEach(l=>kv(l[0], l[1][kc[0]?kc[0].pos:0]||""));
+      else {
+        put(R,0,sec.rowHeader||"",stPHdr); kc.forEach((c,ci)=>put(R,ci+1,c.label,stPHdr)); for(let c=kc.length+1;c<NC;c++) put(R,c,"",stPHdr); R++;
+        lines.forEach(l=>{ put(R,0,l[0],stKey); kc.forEach((c,ci)=>put(R,ci+1,l[1][c.pos]||"",stPCell)); for(let c=kc.length+1;c<NC;c++) put(R,c,"",stPCell); R++; });
+      }
+      R++;
     } else if(sec.kind==="plans"){
       const arr=d.plans||[]; if(!arr.length) return;
       fullRow(sec.title, stSection);
@@ -1082,9 +1112,13 @@ function exportCISpdf(id, opts){
     y=doc.lastAutoTable.finalY+10; };
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
-      const body=[]; sec.fields.forEach(f=>{ const v=fval(d,f.k); if(v) body.push([f.label,v]); });
-      ((d.extra&&d.extra[sec.id])||[]).forEach(pr=>{ if(pr[1]) body.push([pr[0],pr[1]]); });
-      if(body.length) sectionTable(sec.title, body);
+      const kc=colsFor(sec,[d]);
+      const body=sec.fields.map(f=>[f.label, kvCells(d,f)]).concat(((d.extra&&d.extra[sec.id])||[]).map(pr=>[pr[0], kvExCells(pr)]))
+        .filter(l=>hasCells(l[1])).map(l=>[l[0], ...kc.map(c=>l[1][c.pos]||"")]);
+      if(body.length && kc.length<2) sectionTable(sec.title, body);
+      else if(body.length) sectionTable(sec.title, body, { cols:kc.length+1, extra:{ head:[[
+          {content:sec.title,colSpan:kc.length+1,styles:{fillColor:blue,textColor:255,halign:"left",fontStyle:"bold"}}],
+          [{content:sec.rowHeader||"",styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}, ...kc.map(c=>({content:c.label,styles:{fillColor:grey,textColor:[66,83,110],fontStyle:"bold"}}))]]}});
     } else if(sec.kind==="plans"){
       const arr=d.plans||[]; if(arr.length){
         const pc=colsFor(sec,[d]);
@@ -1121,15 +1155,16 @@ function clusterExportModel(grp){
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
       const shared=[], diff=[];
+      const kc=colsFor(sec,cx.datas);
       (sec.fields||[]).forEach(f=>{
-        const vals=cx.datas.map(d=>fval(d,f.k));
+        const vals=cx.datas.map(d=>kvText(kvCells(d,f),kc));
         if(!vals.some(v=>S(v))) return;
         if(!cx.fieldDiff[f.k]) shared.push([f.label, S(vals[0])]);
         else diff.push([f.label, ...vals.map(S)]);
       });
       const lists=cx.datas.map(d=>(d.extra||{})[sec.id]||[]);
       const labels=[]; lists.forEach(l=>l.forEach(p=>{ if(!labels.some(x=>lc(x)===lc(p[0]))) labels.push(p[0]); }));
-      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?S(p[1]):""; });
+      labels.forEach(L=>{ const vals=lists.map(l=>{ const p=l.find(x=>lc(x[0])===lc(L)); return p?kvText(kvExCells(p),kc):""; });
         if(!vals.some(v=>v)) return;
         if(vals.every(v=>v===vals[0])) shared.push([L, vals[0]]); else diff.push([L, ...vals]); });
       if(shared.length||diff.length) secs.push({kind:"kv", title:sec.title, shared, diff});
@@ -1367,8 +1402,9 @@ function diffCIS(pub, draft){
   const secTitle=id=>{ const s=SCHEMA.SECTIONS.find(x=>x.id===id); return s?s.title:id; };
   SCHEMA.SECTIONS.forEach(sec=>{
     if(sec.kind==="kv"){
+      const kc=colsFor(sec,[dOld,dNew]);
       (sec.fields||[]).forEach(f=>{ if(f.k==="rev_date") return;   // stamped on every publish — noise
-        const a=fval(dOld,f.k), b=fval(dNew,f.k);
+        const a=kvText(kvCells(dOld,f),kc), b=kvText(kvCells(dNew,f),kc);
         if(a!==b) out.fields.push({sec:sec.title,label:f.label,from:a,to:b}); });
     } else if(sec.kind==="plans"){
       const oldRows=Array.isArray(dOld.plans)?dOld.plans:[], newRows=Array.isArray(dNew.plans)?dNew.plans:[];
@@ -1537,7 +1573,8 @@ async function addEnclave(id){
   const data={ f:{}, plans:[], model:[], note:"", extra:{} };
   SCHEMA.SECTIONS.forEach(sec=>{ (sec.fields||[]).forEach(f=>{
     if(f.k==="rev_date") return;
-    if(cx ? !cx.fieldDiff[f.k] : true){ const v=fval(bd,f.k); if(v) data.f[f.k]=v; } }); });
+    if(cx ? !cx.fieldDiff[f.k] : true){ const v=fval(bd,f.k); if(v) data.f[f.k]=v;
+      const fc=(bd.fc||{})[f.k]; if(Array.isArray(fc) && hasCells(fc)){ data.fc=data.fc||{}; data.fc[f.k]=fc.slice(); } } }); });
   delete data.f.jde;                       // always enclave-specific
   data.f.community_name=gname; data.f.project_name=nm;
   Object.keys(bd.extra||{}).forEach(sid=>{ if(!cx || !cx.extraDiff[sid]) data.extra[sid]=JSON.parse(JSON.stringify(bd.extra[sid]||[])); });
@@ -1749,7 +1786,7 @@ function tplRowKey(s,r){ return s.id+"/"+tplRid(r); }
 /* how many communities hold data for a row/section (either the live or the draft version) */
 function tplUse(pred){ return state.items.filter(it=>[it.pub,it.draft].some(row=>row && pred(row.data||{}))).length; }
 function tplRowUse(s,r){
-  if(s.kind==="kv") return tplUse(d=>fval(d,r.k)!=="");
+  if(s.kind==="kv") return tplUse(d=>hasCells(kvCells(d,r)));
   if(s.kind==="grid") return tplUse(d=>hasCells(typeof r.pos==="number" ? (Array.isArray(d[s.key])?d[s.key]:[])[r.pos] : (((d.gridx||{})[s.key])||{})[r.k]));
   return 0;
 }
@@ -1794,18 +1831,19 @@ const LIST = {
   r: { name:"row", get:s=>tplRowList(s), key:(s,x)=>s.id+"/"+tplRid(x),
        use:(s,x)=>tplRowUse(s,x), locked:(s,x)=>s.kind==="kv"&&fieldLocked(x),
        lockTip:"Required — can be renamed but not removed" },
-  c: { name:"column", get:s=>(s.kind==="grid"||s.kind==="plans")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
-       use:(s,x)=>tplColUse(s,x), locked:(s,x)=>s.kind==="plans"&&(x.pos===0||x.pos===1),
-       lockTip:"Plan Number and Plan Name identify each plan — they can be renamed but not removed" }
+  c: { name:"column", get:s=>(s.kind==="grid"||s.kind==="plans"||s.kind==="kv")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
+       use:(s,x)=>tplColUse(s,x),
+       locked:(s,x)=>(s.kind==="plans"&&(x.pos===0||x.pos===1)) || (s.kind==="kv"&&x.pos===0),
+       lockTip:"This column holds the section's main values (or identifies each plan) — it can be renamed but not removed" }
 };
 function tplColUse(s,c){ return tplUse(d=>tableRows(s,d).some(r=>{ const v=(r||[])[c.pos]; return v!=null && String(v).trim()!==""; })); }
-const tplUseMini = n => n ? `${n} filled` : `<span class="none">empty</span>`;
 
 /* One section, drawn as the grid it will be on a sheet: headings and row labels
-   are inputs; empty body cells stand in for each sheet's values. */
+   are single-line inputs with their controls on the same line; empty body cells
+   stand in for each sheet's values. */
 function tplSecHTML(s, si, canUp, canDown){
   const locked=secLocked(s);
-  const isKV=s.kind==="kv", isPlans=s.kind==="plans", isGrid=s.kind==="grid";
+  const isPlans=s.kind==="plans";
   let h=`<div class="panel tpl-sec" data-sec="${si}"><div class="sec tpl-sechd">
       <input class="tg-title" data-edit="title" data-s="${si}" value="${esc(s.title)}" placeholder="Section title" aria-label="Section title">
       <span class="sec-right">
@@ -1815,10 +1853,10 @@ function tplSecHTML(s, si, canUp, canDown){
       </span></div>`;
   if(s.kind==="note") return h+`<div class="tpl-info">A free-text notes box on each sheet.</div></div>`;
 
-  const cols = isKV ? [] : s.columns.map((c,i)=>({c,i})).filter(o=>!o.c.retired);
-  const rows = (isKV?s.fields:isGrid?s.rows:[]).map((r,i)=>({r,i})).filter(o=>!o.r.retired);
-  const nBody = (isPlans?0:1) + (isKV?1:cols.length);      // label column (if any) + value columns
-  const span  = nBody + (isKV?0:1);                         // + the "+ Column" column
+  const cols = s.columns.map((c,i)=>({c,i})).filter(o=>!o.c.retired);
+  const rows = (tplRowList(s)||[]).map((r,i)=>({r,i})).filter(o=>!o.r.retired);
+  const span = (isPlans?0:1) + cols.length + 1;            // label column (if any) + value columns + "+ Column"
+  const use=n=>n?`<span class="tg-use" title="${n} sheet${n===1?"":"s"} filled">${n}</span>`:"";
   const ctl=(t,o,n,len,lk)=>{ const L=LIST[t]; const horiz=t==="c";
     return `<span class="tg-ctl">
       <button class="tbtn" data-act="${t}up" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move ${horiz?"left":"up"}" aria-label="Move ${horiz?"left":"up"}">${horiz?"&#8592;":"&#8593;"}</button>
@@ -1826,27 +1864,27 @@ function tplSecHTML(s, si, canUp, canDown){
       ${lk?`<button class="tbtn" disabled title="${esc(L.lockTip)}" aria-label="Required ${L.name}">&times;</button>`
           :`<button class="tbtn del" data-act="${t}del" data-s="${si}" data-r="${o.i}" title="Remove ${L.name}" aria-label="Remove ${L.name}">&times;</button>`}
     </span>`; };
-  const newTag=(t,x)=>state.tplNew[LIST[t].key(s,x)]?'<span class="autotag tpl-new">new</span>':"";
+  const tags=(t,x,lk)=>`${x.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag" title="Can be renamed but not removed">req</span>':""}${state.tplNew[LIST[t].key(s,x)]?'<span class="autotag tpl-new">new</span>':""}`;
+  const line=(input,meta)=>`<div class="tg-line">${input}${meta}</div>`;
 
   let head="<tr>";
-  if(isKV) head+=`<th class="tg-h tg-lblh"><span class="tg-fixed">Field</span></th><th class="tg-h"><span class="tg-fixed">Value</span></th>`;
-  else {
-    if(isGrid) head+=`<th class="tg-h tg-lblh"><input class="tg-in" data-edit="hdr" data-s="${si}" value="${esc(s.rowHeader)}" placeholder="Row labels" aria-label="Row label column heading">
-        <div class="tg-meta"><span class="autotag">row labels</span></div></th>`;
-    head+=cols.map((o,n)=>{ const lk=LIST.c.locked(s,o.c);
-      return `<th class="tg-h"><input class="tg-in" data-edit="col" data-s="${si}" data-r="${o.i}" value="${esc(o.c.label)}" placeholder="Column name" aria-label="Column name">
-        <div class="tg-meta">${lk?'<span class="autotag">required</span>':""}${newTag("c",o.c)}<span class="tg-use">${tplUseMini(LIST.c.use(s,o.c))}</span>${ctl("c",o,n,cols.length,lk)}</div></th>`; }).join("");
-    head+=`<th class="tg-addc"><button class="tbtn add" data-act="cadd" data-s="${si}" title="Add a column">+ Column</button></th>`;
-  }
-  head+="</tr>";
+  if(!isPlans) head+=`<th class="tg-h tg-lblh">${line(
+      `<input class="tg-in" data-edit="hdr" data-s="${si}" value="${esc(s.rowHeader)}" placeholder="${s.kind==="kv"?"Field":"Row labels"}" aria-label="Row label column heading">`,
+      `<span class="tg-meta"><span class="autotag" title="Each row's label">labels</span></span>`)}</th>`;
+  head+=cols.map((o,n)=>{ const lk=LIST.c.locked(s,o.c);
+    return `<th class="tg-h">${line(
+      `<input class="tg-in" data-edit="col" data-s="${si}" data-r="${o.i}" value="${esc(o.c.label)}" placeholder="Column name" aria-label="Column name">`,
+      `<span class="tg-meta">${tags("c",o.c,lk)}${use(LIST.c.use(s,o.c))}${ctl("c",o,n,cols.length,lk)}</span>`)}</th>`; }).join("");
+  head+=`<th class="tg-addc"><button class="tbtn add" data-act="cadd" data-s="${si}" title="Add a column">+ Column</button></th></tr>`;
 
   let body="";
   if(isPlans) body=`<tr><td class="tg-note" colspan="${span}">Plan rows are added on each sheet.</td></tr>`;
   else {
-    const blanks=`<td class="tg-cell"></td>`.repeat(nBody-1)+(isKV?"":`<td class="tg-cell tg-pad"></td>`);
+    const blanks=`<td class="tg-cell"></td>`.repeat(cols.length)+`<td class="tg-cell tg-pad"></td>`;
     body=rows.map((o,n)=>{ const r=o.r; const lk=LIST.r.locked(s,r);
-      return `<tr><td class="tg-lbl"><input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">
-        <div class="tg-meta">${r.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${newTag("r",r)}<span class="tg-use">${tplUseMini(LIST.r.use(s,r))}</span>${ctl("r",o,n,rows.length,lk)}</div></td>${blanks}</tr>`; }).join("");
+      return `<tr><td class="tg-lbl">${line(
+        `<input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">`,
+        `<span class="tg-meta">${tags("r",r,lk)}${use(LIST.r.use(s,r))}${ctl("r",o,n,rows.length,lk)}</span>`)}</td>${blanks}</tr>`; }).join("");
     if(!rows.length) body+=`<tr><td class="tg-note" colspan="${span}">No rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</td></tr>`;
     body+=`<tr><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button></td></tr>`;
   }
