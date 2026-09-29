@@ -61,7 +61,8 @@ function normCols(cols){
   return out.filter(c=>typeof c.pos==="number");
 }
 function normTemplate(secs){
-  return (Array.isArray(secs)?secs:[]).filter(s=>s&&s.id&&s.kind).map(s0=>{ const s=clone(s0);
+  // removed sections are deleted outright (older saves may still carry retired ones — drop them)
+  return (Array.isArray(secs)?secs:[]).filter(s=>s&&s.id&&s.kind&&!s.retired).map(s0=>{ const s=clone(s0);
     s.title=String(s.title||"");
     if(s.kind==="kv") s.fields=(Array.isArray(s.fields)?s.fields:[]).filter(f=>f&&f.k).map(f=>({...f,label:String(f.label||"")}));
     if(s.kind==="grid"){
@@ -1724,16 +1725,18 @@ function renderGaps(a){
 /* ---------------- TEMPLATE EDITOR (editors + admins, maker side) ----------------
    Edits a working copy of SCHEMA.SECTIONS; nothing changes for anyone until
    Save template. Community data is never written from here:
-   - Remove marks a saved row/section `retired` (hidden where empty, kept where
-     filled — see the TEMPLATE notes at the top). Rows/sections added in this
-     unsaved session are simply dropped.
+   - Remove on a section deletes it from the template (its values stay in the
+     records but no longer show). Remove on a saved row/column marks it
+     `retired` (hidden where empty, kept where filled — see the TEMPLATE notes at
+     the top). Anything added in this unsaved session is simply dropped.
+   - Every new section is a grid: a row-label column plus one text column;
+     columns are added/removed one at a time and renamed by typing in the heading.
    - Restore clears `retired`, which brings existing values straight back.
    - New rows get fresh keys, so they can never collide with existing data.
    Identity fields (Community Name, JDE, Project Name, Product Type) and the
    auto-stamped Revision Date can be renamed but not removed, and the section
    holding them can't be removed either. */
 const TPL_LOCKED = new Set([SCHEMA.IDENTITY.name, SCHEMA.IDENTITY.jde, SCHEMA.IDENTITY.project, SCHEMA.IDENTITY.product]);
-const TPL_KIND = { kv:"Fields", plans:"Plan table", grid:"Table", note:"Free text" };
 const rid = p => p + Math.random().toString(36).slice(2,10);
 function tplWork(){ if(!state.tpl){ state.tpl=clone(SCHEMA.SECTIONS); state.tplNew={}; } return state.tpl; }
 function tplDirty(){ return !!state.tpl && JSON.stringify(state.tpl)!==JSON.stringify(SCHEMA.SECTIONS); }
@@ -1754,89 +1757,119 @@ const tplUseTxt = n => n ? `${n} sheet${n===1?"":"s"} filled` : `<span class="no
 const tplWhen = t => t ? new Date(t).toLocaleString([], {month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : "";
 
 function renderTemplate(a){
-  const T=tplWork(); const dirty=tplDirty(); const meta=state.tplMeta||{};
+  const T=tplWork();
+  a.innerHTML=`
+    <div class="note"><b>Template</b> sets the sections, rows and columns every community sheet uses. Type straight into any heading or row label to rename it.
+      Changes go live for everyone when you press <b>Save template</b>. Removing a row or column never deletes data: it disappears only from sheets where it's empty.</div>
+    <div class="bar" id="tplBar"></div>
+    <div class="tpl-list" id="tplList">
+      ${T.map((s,i)=>tplSecHTML(s, i, i>0, i<T.length-1)).join("")}
+      <button class="tpl-addsec" data-act="sadd">+ Add section</button>
+    </div>`;
+  tplBar();
+  const list=$("tplList");
+  list.addEventListener("click",e=>{ const b=e.target.closest("[data-act]"); if(!b||b.disabled||state.tplBusy) return;
+    tplAct(b.dataset.act, b.dataset.s!=null?+b.dataset.s:null, b.dataset.r!=null?+b.dataset.r:null); });
+  list.addEventListener("change",e=>{ const el=e.target.closest("[data-edit]"); if(el) tplEdit(el); });
+  list.addEventListener("keydown",e=>{ if(e.key==="Enter" && e.target.matches("[data-edit]")){ e.preventDefault(); e.target.blur(); } });
+}
+/* the toolbar alone — refreshed after inline edits so typing never loses focus */
+function tplBar(){
+  const bar=$("tplBar"); if(!bar) return;
+  const dirty=tplDirty(); const meta=state.tplMeta||{};
   const saved = meta.saved ? `Last saved ${esc(tplWhen(meta.updated_at))}${meta.updated_by?` by ${esc(meta.updated_by)}`:""}`
                            : "Using the default layout — not saved yet";
-  const active=T.map((s,i)=>({s,i})).filter(x=>!x.s.retired);
-  const removed=T.map((s,i)=>({s,i})).filter(x=>x.s.retired);
-  a.innerHTML=`
-    <div class="note"><b>Template</b> sets the sections, rows and table columns every community sheet uses. Changes go live for everyone when you press <b>Save template</b>.
-      Removing a row, column or section never deletes data: it disappears only from sheets where it's empty, and sheets that already have a value keep it and still show it. Removed items can be restored.</div>
-    <div class="bar">
-      <button class="btn mini solid" id="tplSave" ${dirty&&!state.tplBusy?"":"disabled"}>${state.tplBusy?"Saving…":"Save template"}</button>
-      <button class="btn mini ghost" id="tplDiscard" ${dirty&&!state.tplBusy?"":"disabled"}>Discard changes</button>
-      <button class="btn mini ghost" id="tplAddSec">+ Add section</button>
-      ${dirty?`<span class="pill draft">Unsaved changes</span>`:""}
-      <span class="hint">${saved}</span>
-    </div>
-    <div class="tpl-list" id="tplList">
-      ${active.map((x,n)=>tplSecHTML(x.s, x.i, n>0, n<active.length-1)).join("")}
-      ${removed.length?`<details class="panel tpl-removed"><summary>Removed sections (${removed.length})</summary>
-        <table class="tpl-t">${removed.map(x=>`<tr><td class="tpl-lbl">${esc(x.s.title)} <span class="tpl-kind">${TPL_KIND[x.s.kind]||""}</span></td>
-          <td class="tpl-use">${tplUseTxt(tplUse(d=>secHasData(x.s,d)))}</td>
-          <td class="tpl-acts"><button class="tbtn" data-act="srestore" data-s="${x.i}">Restore</button></td></tr>`).join("")}</table></details>`:""}
-    </div>`;
+  bar.innerHTML=`
+    <button class="btn mini solid" id="tplSave" ${dirty&&!state.tplBusy?"":"disabled"}>${state.tplBusy?"Saving…":"Save template"}</button>
+    <button class="btn mini ghost" id="tplDiscard" ${dirty&&!state.tplBusy?"":"disabled"}>Discard changes</button>
+    ${dirty?`<span class="pill draft">Unsaved changes</span>`:""}
+    <span class="hint">${saved}</span>`;
   $("tplSave").onclick=tplSave;
   $("tplDiscard").onclick=tplDiscard;
-  $("tplAddSec").onclick=()=>tplAct("sadd");
-  $("tplList").addEventListener("click",e=>{ const b=e.target.closest("[data-act]"); if(!b||b.disabled||state.tplBusy) return;
-    tplAct(b.dataset.act, b.dataset.s!=null?+b.dataset.s:null, b.dataset.r!=null?+b.dataset.r:null); });
+  updateCounts();
 }
-/* The two editable lists inside a section: rows ("r") and table columns ("c").
-   Both share one renderer and one set of actions; LIST says how each behaves. */
+
+/* Rows ("r") and columns ("c") share one set of actions; LIST says how each behaves. */
 const LIST = {
-  r: { name:"row", title:"Rows", get:s=>tplRowList(s), key:(s,x)=>s.id+"/"+tplRid(x),
+  r: { name:"row", get:s=>tplRowList(s), key:(s,x)=>s.id+"/"+tplRid(x),
        use:(s,x)=>tplRowUse(s,x), locked:(s,x)=>s.kind==="kv"&&fieldLocked(x),
        lockTip:"Required — can be renamed but not removed" },
-  c: { name:"column", title:"Columns", get:s=>(s.kind==="grid"||s.kind==="plans")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
+  c: { name:"column", get:s=>(s.kind==="grid"||s.kind==="plans")?s.columns:null, key:(s,x)=>s.id+"/col"+x.pos,
        use:(s,x)=>tplColUse(s,x), locked:(s,x)=>s.kind==="plans"&&(x.pos===0||x.pos===1),
        lockTip:"Plan Number and Plan Name identify each plan — they can be renamed but not removed" }
 };
 function tplColUse(s,c){ return tplUse(d=>tableRows(s,d).some(r=>{ const v=(r||[])[c.pos]; return v!=null && String(v).trim()!==""; })); }
-function tplListHTML(s, si, t){
-  const L=LIST[t]; const list=L.get(s); if(!list) return "";
-  const act=list.map((x,i)=>({x,i})).filter(o=>!o.x.retired);
-  const rem=list.map((x,i)=>({x,i})).filter(o=>o.x.retired);
-  const table=(s.kind==="grid"||s.kind==="plans");
-  let h=table?`<div class="tpl-sub">${L.title}</div>`:"";
-  h+=`<table class="tpl-t">`;
-  // a table's first column holds each row's label — renameable, never removable
-  if(t==="c" && s.kind==="grid") h+=`<tr><td class="tpl-lbl">${esc(s.rowHeader)||'<span class="none">(no heading)</span>'}<span class="autotag">row labels</span></td>
-      <td class="tpl-use"></td><td class="tpl-acts"><button class="tbtn" data-act="hren" data-s="${si}">Rename</button></td></tr>`;
-  h+=act.map((o,n)=>{ const x=o.x; const lk=L.locked(s,x);
-    return `<tr><td class="tpl-lbl">${esc(x.label)||'<span class="none">(no label)</span>'}${
-        x.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${
-        state.tplNew[L.key(s,x)]?'<span class="autotag tpl-new">new</span>':""}</td>
-      <td class="tpl-use">${tplUseTxt(L.use(s,x))}</td>
-      <td class="tpl-acts">
-        <button class="tbtn" data-act="${t}up" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move ${t==="c"?"left":"up"}" aria-label="Move ${t==="c"?"left":"up"}">${t==="c"?"&#8592;":"&#8593;"}</button>
-        <button class="tbtn" data-act="${t}down" data-s="${si}" data-r="${o.i}" ${n<act.length-1?"":"disabled"} title="Move ${t==="c"?"right":"down"}" aria-label="Move ${t==="c"?"right":"down"}">${t==="c"?"&#8594;":"&#8595;"}</button>
-        <button class="tbtn" data-act="${t}ren" data-s="${si}" data-r="${o.i}">Rename</button>
-        ${lk?`<button class="tbtn" disabled title="${esc(L.lockTip)}" aria-label="Required ${L.name}">&times;</button>`
-            :`<button class="tbtn del" data-act="${t}del" data-s="${si}" data-r="${o.i}" title="Remove ${L.name}" aria-label="Remove ${esc(x.label)}">&times;</button>`}
-      </td></tr>`; }).join("");
-  if(!act.length) h+=`<tr><td colspan="3"><span class="none">No template ${L.name}s yet${t==="r"&&s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</span></td></tr>`;
-  h+=`<tr class="tpl-addrow"><td colspan="3"><button class="tbtn add" data-act="${t}add" data-s="${si}">+ Add ${L.name}</button></td></tr></table>`;
-  if(rem.length) h+=`<details class="tpl-removed-rows"><summary>Removed ${L.name}s (${rem.length})</summary><table class="tpl-t">${rem.map(o=>
-    `<tr><td class="tpl-lbl">${esc(o.x.label)}</td><td class="tpl-use">${tplUseTxt(L.use(s,o.x))}</td>
-      <td class="tpl-acts"><button class="tbtn" data-act="${t}restore" data-s="${si}" data-r="${o.i}">Restore</button></td></tr>`).join("")}</table></details>`;
-  return h;
-}
+const tplUseMini = n => n ? `${n} filled` : `<span class="none">empty</span>`;
+
+/* One section, drawn as the grid it will be on a sheet: headings and row labels
+   are inputs; empty body cells stand in for each sheet's values. */
 function tplSecHTML(s, si, canUp, canDown){
   const locked=secLocked(s);
-  let h=`<div class="panel tpl-sec"><div class="sec"><span>${esc(s.title)||'<i>(untitled)</i>'} <span class="tpl-kind">${TPL_KIND[s.kind]||""}</span>${state.tplNew[s.id]?' <span class="tpl-kind">new</span>':""}</span>
-    <span class="sec-right">
-      <button data-act="sup" data-s="${si}" ${canUp?"":"disabled"} title="Move section up" aria-label="Move section up">&#8593;</button>
-      <button data-act="sdown" data-s="${si}" ${canDown?"":"disabled"} title="Move section down" aria-label="Move section down">&#8595;</button>
-      <button data-act="sren" data-s="${si}">Rename</button>
-      ${locked?`<button disabled title="Holds the community's identity fields, so it can't be removed">Remove</button>`:`<button data-act="sdel" data-s="${si}">Remove</button>`}
-    </span></div>`;
-  if(s.kind==="plans") h+=`<div class="tpl-info">Plan rows are added on each sheet; the columns below apply to every sheet.</div>`;
-  if(s.kind==="note")  h+=`<div class="tpl-info">A free-text notes box on each sheet.</div>`;
-  if(s.kind==="grid")  h+=`<div class="tpl-info">The rows below are offered on every sheet; each sheet can also add its own rows.</div>`;
-  h+=tplListHTML(s, si, "c");
-  h+=tplListHTML(s, si, "r");
+  const isKV=s.kind==="kv", isPlans=s.kind==="plans", isGrid=s.kind==="grid";
+  let h=`<div class="panel tpl-sec" data-sec="${si}"><div class="sec tpl-sechd">
+      <input class="tg-title" data-edit="title" data-s="${si}" value="${esc(s.title)}" placeholder="Section title" aria-label="Section title">
+      <span class="sec-right">
+        <button data-act="sup" data-s="${si}" ${canUp?"":"disabled"} title="Move section up" aria-label="Move section up">&#8593;</button>
+        <button data-act="sdown" data-s="${si}" ${canDown?"":"disabled"} title="Move section down" aria-label="Move section down">&#8595;</button>
+        ${locked?`<button disabled title="Holds the community's identity fields, so it can't be removed">Remove</button>`:`<button data-act="sdel" data-s="${si}">Remove</button>`}
+      </span></div>`;
+  if(s.kind==="note") return h+`<div class="tpl-info">A free-text notes box on each sheet.</div></div>`;
+
+  const cols = isKV ? [] : s.columns.map((c,i)=>({c,i})).filter(o=>!o.c.retired);
+  const rows = (isKV?s.fields:isGrid?s.rows:[]).map((r,i)=>({r,i})).filter(o=>!o.r.retired);
+  const nBody = (isPlans?0:1) + (isKV?1:cols.length);      // label column (if any) + value columns
+  const span  = nBody + (isKV?0:1);                         // + the "+ Column" column
+  const ctl=(t,o,n,len,lk)=>{ const L=LIST[t]; const horiz=t==="c";
+    return `<span class="tg-ctl">
+      <button class="tbtn" data-act="${t}up" data-s="${si}" data-r="${o.i}" ${n>0?"":"disabled"} title="Move ${horiz?"left":"up"}" aria-label="Move ${horiz?"left":"up"}">${horiz?"&#8592;":"&#8593;"}</button>
+      <button class="tbtn" data-act="${t}down" data-s="${si}" data-r="${o.i}" ${n<len-1?"":"disabled"} title="Move ${horiz?"right":"down"}" aria-label="Move ${horiz?"right":"down"}">${horiz?"&#8594;":"&#8595;"}</button>
+      ${lk?`<button class="tbtn" disabled title="${esc(L.lockTip)}" aria-label="Required ${L.name}">&times;</button>`
+          :`<button class="tbtn del" data-act="${t}del" data-s="${si}" data-r="${o.i}" title="Remove ${L.name}" aria-label="Remove ${L.name}">&times;</button>`}
+    </span>`; };
+  const newTag=(t,x)=>state.tplNew[LIST[t].key(s,x)]?'<span class="autotag tpl-new">new</span>':"";
+
+  let head="<tr>";
+  if(isKV) head+=`<th class="tg-h tg-lblh"><span class="tg-fixed">Field</span></th><th class="tg-h"><span class="tg-fixed">Value</span></th>`;
+  else {
+    if(isGrid) head+=`<th class="tg-h tg-lblh"><input class="tg-in" data-edit="hdr" data-s="${si}" value="${esc(s.rowHeader)}" placeholder="Row labels" aria-label="Row label column heading">
+        <div class="tg-meta"><span class="autotag">row labels</span></div></th>`;
+    head+=cols.map((o,n)=>{ const lk=LIST.c.locked(s,o.c);
+      return `<th class="tg-h"><input class="tg-in" data-edit="col" data-s="${si}" data-r="${o.i}" value="${esc(o.c.label)}" placeholder="Column name" aria-label="Column name">
+        <div class="tg-meta">${lk?'<span class="autotag">required</span>':""}${newTag("c",o.c)}<span class="tg-use">${tplUseMini(LIST.c.use(s,o.c))}</span>${ctl("c",o,n,cols.length,lk)}</div></th>`; }).join("");
+    head+=`<th class="tg-addc"><button class="tbtn add" data-act="cadd" data-s="${si}" title="Add a column">+ Column</button></th>`;
+  }
+  head+="</tr>";
+
+  let body="";
+  if(isPlans) body=`<tr><td class="tg-note" colspan="${span}">Plan rows are added on each sheet.</td></tr>`;
+  else {
+    const blanks=`<td class="tg-cell"></td>`.repeat(nBody-1)+(isKV?"":`<td class="tg-cell tg-pad"></td>`);
+    body=rows.map((o,n)=>{ const r=o.r; const lk=LIST.r.locked(s,r);
+      return `<tr><td class="tg-lbl"><input class="tg-in" data-edit="row" data-s="${si}" data-r="${o.i}" value="${esc(r.label)}" placeholder="Row label" aria-label="Row label">
+        <div class="tg-meta">${r.readonly?'<span class="autotag">auto</span>':lk?'<span class="autotag">required</span>':""}${newTag("r",r)}<span class="tg-use">${tplUseMini(LIST.r.use(s,r))}</span>${ctl("r",o,n,rows.length,lk)}</div></td>${blanks}</tr>`; }).join("");
+    if(!rows.length) body+=`<tr><td class="tg-note" colspan="${span}">No rows yet${s.id==="deck"?" — this section also shows lines merged in per sheet":""}.</td></tr>`;
+    body+=`<tr><td class="tg-addr" colspan="${span}"><button class="tbtn add" data-act="radd" data-s="${si}">+ Row</button></td></tr>`;
+  }
+  h+=`<div class="tscroll"><table class="tpl-g">${head}${body}</table></div>`;
+
+  // removed (retired) rows/columns: hidden where empty, restorable
+  ["c","r"].forEach(t=>{ const list=LIST[t].get(s); if(!list) return;
+    const rem=list.map((x,i)=>({x,i})).filter(o=>o.x.retired); if(!rem.length) return;
+    h+=`<details class="tpl-removed-rows"><summary>Removed ${LIST[t].name}s (${rem.length}) — still shown on sheets that have values</summary><table class="tpl-t">${rem.map(o=>
+      `<tr><td class="tpl-lbl">${esc(o.x.label)}</td><td class="tpl-use">${tplUseTxt(LIST[t].use(s,o.x))}</td>
+        <td class="tpl-acts"><button class="tbtn" data-act="${t}restore" data-s="${si}" data-r="${o.i}">Restore</button></td></tr>`).join("")}</table></details>`; });
   return h+`</div>`;
+}
+/* inline rename (section title, row-label heading, column heading, row label) */
+function tplEdit(el){
+  const T=tplWork(); const s=T[+el.dataset.s]; if(!s) return;
+  const v=el.value.trim(); const kind=el.dataset.edit;
+  if(kind==="title"){ s.title=v; return tplBar(); }
+  if(kind==="hdr"){ s.rowHeader=v; return tplBar(); }
+  const t = kind==="col" ? "c" : "r"; const L=LIST[t]; const list=L.get(s); const x=list&&list[+el.dataset.r]; if(!x) return;
+  if(v && list.some(y=>y!==x && !y.retired && lc(y.label).trim()===lc(v))){
+    uiAlert(`"${s.title}" already has a ${L.name} called "${v}".`,`Rename ${L.name}`); el.value=x.label; return; }
+  x.label=v; el.value=v; tplBar();
 }
 /* swap arr[i] with the nearest non-retired neighbour in direction dir */
 function tplMove(arr, i, dir){
@@ -1844,105 +1877,59 @@ function tplMove(arr, i, dir){
   if(j<0 || j>=arr.length) return;
   const t=arr[i]; arr[i]=arr[j]; arr[j]=t;
 }
-/* Add section: a label/value list, or a table with its own rows and columns */
-async function tplAddSection(T){
-  const r=await openModal({ title:"Add section",
-    body:`<label class="fld">Section title</label>
-      <input type="text" class="modal-input" id="nsTitle" placeholder="e.g. HOA Requirements">
-      <label class="fld" style="margin-top:12px">Type</label>
-      <div class="ns-kinds">
-        <label><input type="radio" name="nsKind" value="kv" checked> <b>Fields</b> <span class="hint">— a label / value list</span></label>
-        <label><input type="radio" name="nsKind" value="grid"> <b>Table</b> <span class="hint">— rows × columns</span></label>
-      </div>
-      <div id="nsTbl" class="hidden">
-        <label class="fld" style="margin-top:12px">Columns <span class="hint">(comma-separated — you can change them later)</span></label>
-        <input type="text" class="modal-input" id="nsCols" placeholder="e.g. Vendor, Contact, Phone">
-        <label class="fld" style="margin-top:12px">Heading for the row-label column</label>
-        <input type="text" class="modal-input" id="nsHead" placeholder="e.g. Item">
-      </div>`,
-    buttons:[{label:"Cancel",value:null},
-      {label:"Add",primary:true,value:card=>({ title:card.querySelector("#nsTitle").value.trim(),
-        kind:(card.querySelector('input[name="nsKind"]:checked')||{}).value||"kv",
-        cols:card.querySelector("#nsCols").value, head:card.querySelector("#nsHead").value.trim() })}] ,
-  }).catch(()=>null);
-  return r;
-}
+/* after a repaint, put the cursor in a just-created heading/label */
+function tplFocus(sel){ const el=document.querySelector(sel); if(el){ el.focus(); if(el.select) el.select(); if(el.scrollIntoView) el.scrollIntoView({block:"nearest"}); } }
 async function tplAct(act, si, ri){
   const T=tplWork();
   if(act==="sadd"){
-    const pending=tplAddSection(T);
-    // show/hide the table options as the type changes (the modal is already in the DOM)
-    const cards=document.querySelectorAll(".modal-card"); const card=cards[cards.length-1];
-    if(card){ card.querySelectorAll('input[name="nsKind"]').forEach(rb=>rb.onchange=()=>
-      card.querySelector("#nsTbl").classList.toggle("hidden", rb.value!=="grid" || !rb.checked)); }
-    const v=await pending;
-    if(!v || !v.title) return;
-    if(T.some(s=>!s.retired && lc(s.title).trim()===lc(v.title))){ uiAlert(`There's already a section called "${v.title}".`,"Add section"); return; }
-    let s;
-    if(v.kind==="grid"){
-      const names=String(v.cols||"").split(",").map(x=>x.trim()).filter(Boolean);
-      const cols=(names.length?names:["Value"]).map((label,pos)=>({label,pos}));
-      s={ id:rid("s_"), title:v.title, kind:"grid", key:rid("t_"), rowHeader:v.head||"Item",
-          rows:[], presetBase:0, columns:cols, colNext:cols.length };
-    } else s={ id:rid("s_"), title:v.title, kind:"kv", fields:[] };
-    // new sections go just above Notes when Notes is the last active section
-    let at=T.length; for(let i=T.length-1;i>=0;i--){ if(T[i].retired) continue; if(T[i].kind==="note") at=i; break; }
-    T.splice(at,0,s); state.tplNew[s.id]=1;
-    return tplRepaint();
+    // every new section is a grid: a row-label column plus one text column
+    const s={ id:rid("s_"), title:"New section", kind:"grid", key:rid("t_"), rowHeader:"Item",
+              rows:[], presetBase:0, columns:[{label:"Value",pos:0}], colNext:1 };
+    T.push(s); state.tplNew[s.id]=1;
+    tplRepaint(); return tplFocus(`.tg-title[data-s="${T.length-1}"]`);
   }
   const s=T[si]; if(!s) return;
-  if(act==="sup"||act==="sdown") tplMove(T, si, act==="sup"?-1:1);
-  else if(act==="sren"){
-    const v=await uiPrompt("Section title",{title:"Rename section",okText:"Rename",value:s.title}); if(!v) return; s.title=v; }
-  else if(act==="hren"){
-    const v=await uiPrompt("Heading for the row-label column",{title:"Rename column",okText:"Rename",value:s.rowHeader}); if(v==null) return; s.rowHeader=v; }
-  else if(act==="sdel"){
+  if(act==="sup"||act==="sdown"){ tplMove(T, si, act==="sup"?-1:1); return tplRepaint(); }
+  if(act==="sdel"){
     if(secLocked(s)) return;
-    if(state.tplNew[s.id]){ T.splice(si,1); delete state.tplNew[s.id]; return tplRepaint(); }
-    const n=tplUse(d=>secHasData(s,d));
-    if(!(await uiConfirm(`Remove "${s.title}" from the template? ${n
-        ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} data in it — ${n===1?"that sheet keeps its data and still shows":"those sheets keep their data and still show"} the section.`
-        : "No sheet has data in it."} You can restore it later.`,{title:"Remove section",okText:"Remove"}))) return;
-    s.retired=true;
+    if(!state.tplNew[s.id]){
+      const n=tplUse(d=>secHasData(s,d));
+      if(!(await uiConfirm(`Remove "${s.title||"this section"}" from the template? It will no longer appear on any sheet.${n
+          ? ` ${n} sheet${n===1?" has":"s have"} data in it — the data stays in the database but won't be shown.`:""}`,
+          {title:"Remove section",okText:"Remove section",danger:!!n}))) return;
+    }
+    T.splice(si,1); delete state.tplNew[s.id];
+    return tplRepaint();
   }
-  else if(act==="srestore") delete s.retired;
-  else {
-    const t=act[0], op=act.slice(1); const L=LIST[t]; const list=L&&L.get(s); if(!list) return;
-    const W=L.name, Wc=W[0].toUpperCase()+W.slice(1);
-    if(op==="add"){
-      const v=await uiPrompt(`New ${W} in "${s.title}"`,{title:`Add ${W}`,okText:"Add",
-        placeholder:t==="c"?"e.g. Notes":s.kind==="grid"?"e.g. Model Home Plan 4":"e.g. Fence Type"});
-      if(!v) return;
-      const hit=list.find(x=>lc(x.label).trim()===lc(v));
-      if(hit && !hit.retired){ uiAlert(`"${s.title}" already has a ${W} called "${hit.label}".`,`Add ${W}`); return; }
-      if(hit && hit.retired){
-        if(await uiConfirm(`"${hit.label}" was removed from this section earlier. Restore it instead? Any values sheets already have come back with it.`,{title:`Restore ${W}`,okText:"Restore"})) delete hit.retired;
-        return tplRepaint();
-      }
-      // columns take the next never-used cell slot; rows get a fresh key
-      const x = t==="c" ? { label:v, pos:s.colNext++ } : { k:rid(s.kind==="kv"?"c_":"r_"), label:v };
-      list.push(x); state.tplNew[L.key(s,x)]=1;
-      return tplRepaint();
+  const t=act[0], op=act.slice(1); const L=LIST[t]; const list=L&&L.get(s); if(!list) return;
+  if(op==="add"){
+    if(t==="c"){
+      // next never-used cell slot; default name "Column N", renamed by typing in the heading
+      let n=list.filter(c=>!c.retired).length+1, label;
+      do { label=`Column ${n++}`; } while(list.some(c=>lc(c.label)===lc(label)));
+      const x={ label, pos:s.colNext++ }; list.push(x); state.tplNew[L.key(s,x)]=1;
+      tplRepaint(); return tplFocus(`.tg-in[data-edit="col"][data-s="${si}"][data-r="${list.length-1}"]`);
     }
-    const x=list[ri]; if(!x) return;
-    if(op==="up"||op==="down") tplMove(list, ri, op==="up"?-1:1);
-    else if(op==="ren"){
-      const v=await uiPrompt(`${Wc} label`,{title:`Rename ${W}`,okText:"Rename",value:x.label}); if(!v) return;
-      if(list.some(y=>y!==x && !y.retired && lc(y.label).trim()===lc(v))){ uiAlert(`"${s.title}" already has a ${W} called "${v}".`,`Rename ${W}`); return; }
-      x.label=v;
-    }
-    else if(op==="del"){
-      if(L.locked(s,x)) return;
-      if(t==="c" && list.filter(y=>!y.retired).length<=1){ uiAlert("A table needs at least one column. Add another column first.","Remove column"); return; }
-      const key=L.key(s,x);
-      if(state.tplNew[key]){ list.splice(ri,1); delete state.tplNew[key]; return tplRepaint(); }
-      const n=L.use(s,x);
-      if(!(await uiConfirm(`Remove the ${W} "${x.label}" from ${s.title}? ${n
-          ? `It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} a value in it — ${n===1?"that sheet keeps it and still shows":"those sheets keep it and still show"} the ${W}.`
-          : `No sheet has a value in it.`} You can restore it later.`,{title:`Remove ${W}`,okText:"Remove"}))) return;
-      x.retired=true;
-    }
-    else if(op==="restore") delete x.retired;
+    const x={ k:rid(s.kind==="kv"?"c_":"r_"), label:"" }; list.push(x); state.tplNew[L.key(s,x)]=1;
+    tplRepaint(); return tplFocus(`.tg-in[data-edit="row"][data-s="${si}"][data-r="${list.length-1}"]`);
+  }
+  const x=list[ri]; if(!x) return;
+  if(op==="up"||op==="down") tplMove(list, ri, op==="up"?-1:1);
+  else if(op==="del"){
+    if(L.locked(s,x)) return;
+    if(t==="c" && list.filter(y=>!y.retired).length<=1){ uiAlert("A table needs at least one column. Add another column first.","Remove column"); return; }
+    const key=L.key(s,x);
+    if(state.tplNew[key]){ list.splice(ri,1); delete state.tplNew[key]; return tplRepaint(); }
+    const n=L.use(s,x);
+    const nm=x.label||`this ${L.name}`;
+    if(n && !(await uiConfirm(`Remove "${nm}" from ${s.title}? It disappears from sheets where it's empty. ${n} sheet${n===1?" has":"s have"} a value in it — ${n===1?"that sheet keeps it and still shows":"those sheets keep it and still show"} the ${L.name}.`,
+        {title:`Remove ${L.name}`,okText:"Remove"}))) return;
+    x.retired=true;
+  }
+  else if(op==="restore"){
+    if(list.some(y=>y!==x && !y.retired && lc(y.label).trim()===lc(x.label).trim())){
+      uiAlert(`Rename the current "${x.label}" ${L.name} first — two ${L.name}s can't share a name.`,`Restore ${L.name}`); return; }
+    delete x.retired;
   }
   tplRepaint();
 }
@@ -1955,8 +1942,14 @@ async function tplDiscard(){
 async function tplSave(){
   const T=state.tpl; if(!T || !tplDirty() || state.tplBusy) return;
   if(DEMO||!sb){ uiAlert("Not connected to the database.","Save template"); return; }
-  if(T.some(s=>!String(s.title||"").trim()) || T.some(s=>(tplRowList(s)||[]).concat(s.columns||[]).some(r=>!String(r.label||"").trim()))){
-    uiAlert("Every section and row needs a label before saving.","Save template"); return; }
+  // every section, active row and active column needs a name — point at the first blank one
+  for(let i=0;i<T.length;i++){ const s=T[i];
+    if(!String(s.title||"").trim()){ uiAlert("A section is missing its title.","Save template"); return tplFocus(`.tg-title[data-s="${i}"]`); }
+    const r=(tplRowList(s)||[]).findIndex(x=>!x.retired && !String(x.label||"").trim());
+    if(r>=0){ uiAlert(`"${s.title}" has a row with no label — name it or remove it.`,"Save template"); return tplFocus(`.tg-in[data-edit="row"][data-s="${i}"][data-r="${r}"]`); }
+    const c=(s.columns||[]).findIndex(x=>!x.retired && !String(x.label||"").trim());
+    if(c>=0){ uiAlert(`"${s.title}" has a column with no name.`,"Save template"); return tplFocus(`.tg-in[data-edit="col"][data-s="${i}"][data-r="${c}"]`); }
+  }
   const sum=tplChangeSummary(SCHEMA.SECTIONS, T);
   if(!(await uiConfirm(`Save the template? It applies to every community sheet right away.${sum?` Changes: ${sum}.`:""}`,{title:"Save template",okText:"Save template"}))) return;
   state.tplBusy=true; tplRepaint();
@@ -1988,6 +1981,7 @@ function tplChangeSummary(before, after){
   let addS=0, remS=0, addR=0, remR=0, addC=0, remC=0, ren=0, moved=false;
   const both=new Set(after.filter(s=>!s.retired && B.has(s.id) && !B.get(s.id).retired).map(s=>s.id));
   if(before.filter(s=>both.has(s.id)).map(s=>s.id).join()!==after.filter(s=>both.has(s.id)).map(s=>s.id).join()) moved=true;
+  before.forEach(o=>{ if(!after.some(s=>s.id===o.id)) remS++; });
   after.forEach(s=>{ const o=B.get(s.id);
     if(!o){ if(!s.retired) addS++; return; }
     if(!o.retired && s.retired) remS++;
