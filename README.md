@@ -1,6 +1,6 @@
 # Community-DB
 
-A login-gated Community Information Sheet (CIS) portal for the Orlando Division, built as a
+A login-gated Community Information Sheet (CIS) portal for the Orlando and Tampa divisions, built as a
 static site on GitHub Pages against the shared Supabase backend (same project as Takeoff Flow
 and the Vendor Portal). All backend objects are namespaced `cdb_*`.
 
@@ -29,6 +29,21 @@ Two sides, one app:
   version until you press **Publish**.
 - **Edit** on a published community clones it into a draft; **Discard draft** reverts to live.
 - Each publish writes an immutable snapshot to `cdb_cis_revisions` (audit trail).
+
+## Divisions (Orlando, Tampa)
+
+The **division picker** next to the title switches the whole app: communities, template, Gaps,
+What's New and the publish list are all per division (the pick is remembered per browser; links can
+force one with `#div=tampa`, and a `#jde=` link jumps to whichever division holds that JDE).
+
+- Divisions are listed in `config.js` → `DIVISIONS`. Each has its own default layout in
+  `CIS.DIVISION_SECTIONS` (Tampa mirrors the Tampa GA CIS workbook); a saved template in
+  `cdb_template` (id = division key) overrides it.
+- **Editors are per division** (`cdb_app_roles.divisions`, same model as Takeoff Flow). Admins edit
+  every division; everyone signed in can view published sheets in every division. Set divisions in
+  **Admin → Users & roles** (the *Edits* column) or from Blueprint's Users page.
+- Requires `add_divisions.sql` (run once; re-run it after any older SQL file). Its first run keeps
+  every existing editor on Orlando only.
 
 ## Enclaves
 
@@ -80,5 +95,6 @@ layout in `config.js` is used.
 | `config.js` | Supabase keys, image settings, and the **default** CIS template |
 | `styles.css` | Design language shared with the other portals |
 | `app.js` | Auth, data loading, template, viewer, maker, gaps, images, template editor, admin |
+| `add_divisions.sql` | Per-division editors: `divisions` column, `cdb_can_edit()`, division-scoped RLS + RPCs |
 | `add_template.sql` | Editable template tables (`cdb_template`, `cdb_template_revisions`) |
 | `supabase_setup.sql` | Backend: tables, RLS, publish/draft RPCs, Storage bucket, user admin |

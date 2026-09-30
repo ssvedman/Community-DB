@@ -54,7 +54,27 @@ function isoToDate(iso){ const m=String(iso||"").match(/^(\d{4})-(\d{2})-(\d{2})
      only grows), so adding, reordering or removing a column never shifts a
      value. A removed column is `retired` and still shows on sheets where any
      row has a value in it. */
-const TPL_ID = (CFG.DIVISION && CFG.DIVISION.key) || "orlando";
+/* ---------------- DIVISIONS ----------------
+   One site, several divisions. state.div scopes everything a user sees or edits:
+   the template (cdb_template.id), the communities (cdb_cis.division), the What's
+   New feed and the publish list. Editors are division-scoped (cdb_app_roles.
+   divisions); admins edit every division. */
+const DIVS = (Array.isArray(CFG.DIVISIONS) && CFG.DIVISIONS.length) ? CFG.DIVISIONS
+           : [CFG.DIVISION || { key:"orlando", label:"Orlando Division" }];
+const DEFAULT_DIV = (CFG.DIVISION && CFG.DIVISION.key) || DIVS[0].key;
+const divInfo = k => DIVS.find(d=>d.key===k) || { key:k, label:k };
+function initialDiv(){
+  const m=(location.hash||"").match(/[#&]div=([^&]+)/);
+  const fromHash=m?decodeURIComponent(m[1]).toLowerCase():null;
+  if(fromHash && DIVS.some(d=>d.key===fromHash)) return fromHash;
+  try{ const s=localStorage.getItem("cdb_div"); if(s && DIVS.some(d=>d.key===s)) return s; }catch(e){}
+  return DEFAULT_DIV;
+}
+state.div = initialDiv();
+state.divs = null;      // divisions this user may edit (null = not scoped / pre-migration)
+const tplId = () => state.div;
+/* per-division localStorage keys; the default division keeps the original key names */
+const divKey = base => state.div===DEFAULT_DIV ? base : base+":"+state.div;
 const clone = o => JSON.parse(JSON.stringify(o));
 function normCols(cols){
   const out=(Array.isArray(cols)?cols:[]).map((c,i)=> (c&&typeof c==="object") ? {...c,label:String(c.label||"")} : {label:String(c==null?"":c),pos:i});
@@ -111,12 +131,20 @@ function customLabels(sec, d, create){
   if(create){ d.gridl=d.gridl||{}; if(!Array.isArray(d.gridl[sec.key])) d.gridl[sec.key]=[]; }
   const g=(d.gridl||{})[sec.key]; return Array.isArray(g)?g:[];
 }
-SCHEMA.DEFAULT_SECTIONS = normTemplate(SCHEMA.SECTIONS);
+/* default layout per division: config's DIVISION_SECTIONS[div], else the Orlando SECTIONS */
+const BASE_SECTIONS = normTemplate(SCHEMA.SECTIONS);
+function defaultSectionsFor(div){
+  const alt=(SCHEMA.DIVISION_SECTIONS||{})[div];
+  return Array.isArray(alt) && alt.length ? normTemplate(alt) : clone(BASE_SECTIONS);
+}
+SCHEMA.DEFAULT_SECTIONS = defaultSectionsFor(state.div);
 SCHEMA.SECTIONS = clone(SCHEMA.DEFAULT_SECTIONS);
 async function loadTemplate(){
   state.tplMeta={ updated_at:null, updated_by:null, saved:false };
+  SCHEMA.DEFAULT_SECTIONS = defaultSectionsFor(state.div);
+  SCHEMA.SECTIONS = clone(SCHEMA.DEFAULT_SECTIONS);
   if(DEMO||!sb) return;
-  try{ const { data, error }=await sb.from("cdb_template").select("*").eq("id",TPL_ID).maybeSingle();
+  try{ const { data, error }=await sb.from("cdb_template").select("*").eq("id",tplId()).maybeSingle();
     if(error){ console.warn("template load failed — using defaults",error); return; }
     if(data && Array.isArray(data.sections) && data.sections.length){
       SCHEMA.SECTIONS=normTemplate(data.sections);
@@ -124,7 +152,16 @@ async function loadTemplate(){
     }
   }catch(e){ console.warn("template load failed — using defaults",e); }
 }
-const isEditor = () => state.role==="editor" || state.role==="admin";
+/* editor rights are per division: an admin edits all of them, an editor only the
+   divisions listed on their cdb_app_roles row. state.divs===null means the
+   divisions column isn't there yet (migration not run) — the database then still
+   lets an editor write anywhere, so the UI matches that. */
+function canEditDiv(div){
+  if(state.role==="admin") return true;
+  if(state.role!=="editor") return false;
+  return state.divs===null || state.divs.includes(div);
+}
+const isEditor = () => canEditDiv(state.div);
 const isAdmin  = () => state.role==="admin";
 const making   = () => state.mode==="make" && isEditor();
 
@@ -234,14 +271,16 @@ async function enterApp(email){
   if(window._recovering||entered) return; entered=true;
   state.email=lc(email);
   const fb=CFG.ROLES[state.email]; if(fb) state.role=fb.role||"viewer";
-  if(!DEMO&&sb){ try{ const {data}=await sb.from("cdb_app_roles").select("role").eq("email",state.email).maybeSingle();
+  if(!DEMO&&sb){ try{
+    let { data, error }=await sb.from("cdb_app_roles").select("role,divisions").eq("email",state.email).maybeSingle();
+    if(error){ state.divs=null;   // pre-migration: no divisions column
+      ({ data }=await sb.from("cdb_app_roles").select("role").eq("email",state.email).maybeSingle()); }
+    else state.divs = data ? (Array.isArray(data.divisions)?data.divisions:[]) : [];
     if(data&&data.role) state.role=data.role; }catch(e){} }
   $("auth").classList.add("hidden"); $("app").classList.remove("hidden");
-  $("userChip").innerHTML=esc(state.email)+` <span class="role-tag">${esc(state.role)}</span>`;
   $("themeBtn").textContent=document.documentElement.getAttribute("data-theme")==="dark"?"Light":"Dark";
-  if(isEditor()){ $("modeToggle").classList.remove("hidden"); }
   if(isAdmin()) $("adminLink").classList.remove("hidden");
-  wireChrome(); syncEditorTabs(); pubqLoad();
+  wireChrome(); wireDivision(); syncDivisionChrome(); pubqLoad();
   await loadTemplate(); await loadAll(); render(); refreshWhatsNewBadge();
   applyDeepLink();
 }
@@ -256,16 +295,28 @@ async function enterApp(email){
 
    An unmatched or unpublished community falls back to putting the number in
    the search box, so the link explains itself instead of doing nothing. */
-function applyDeepLink(){
-  const m=(location.hash||"").match(/[#&](?:jde|cis)=([^&]+)/);
-  if(!m) return false;
-  const key=decodeURIComponent(m[1]).trim();
+async function applyDeepLink(){
+  const h=location.hash||"";
+  const dm=h.match(/[#&]div=([^&]+)/);
+  const m=h.match(/[#&](?:jde|cis)=([^&]+)/);
+  if(!m && !dm) return false;
   history.replaceState(null,"",location.pathname+location.search);
+  if(dm){ const dv=decodeURIComponent(dm[1]).toLowerCase();
+    if(dv!==state.div && DIVS.some(d=>d.key===dv)) await switchDivision(dv); }
+  if(!m) return true;
+  const key=decodeURIComponent(m[1]).trim();
   if(!key) return false;
   state.view="browse"; setTab(); showDash();
   const want=lc(key);
-  const hit = state.items.find(it=>lc(it.jde)===want)
-           || state.items.find(it=>lc(it.name)===want);
+  const find=()=> state.items.find(it=>lc(it.jde)===want) || state.items.find(it=>lc(it.name)===want);
+  let hit=find();
+  // links from sibling apps carry only the JDE — if it lives in another division, go there
+  if(!hit && !dm && !DEMO && sb){
+    try{ const { data }=await sb.from("cdb_cis").select("division").eq("jde",key).limit(1);
+      const dv=data&&data[0]&&data[0].division;
+      if(dv && dv!==state.div && DIVS.some(d=>d.key===dv)){ await switchDivision(dv); hit=find(); }
+    }catch(e){}
+  }
   if(!hit){ state.q=key; render(); return true; }
   // a viewer can only see published, active records — relax the toggles rather
   // than opening a detail pane the list doesn't contain
@@ -281,6 +332,47 @@ window.addEventListener("hashchange", ()=>{ if(state.email) applyDeepLink(); });
 // Gaps and Template live on the maker side only (editors + admins).
 function syncEditorTabs(){
   document.querySelectorAll(".editoronly").forEach(el=>el.classList.toggle("hidden", !making()));
+}
+/* ---------------- DIVISION SWITCHER ---------------- */
+function wireDivision(){
+  const sel=$("divSel"); if(!sel) return;
+  sel.innerHTML=DIVS.map(d=>`<option value="${esc(d.key)}">${esc(d.label)}</option>`).join("");
+  sel.value=state.div;
+  sel.classList.toggle("hidden", DIVS.length<2);
+  const fixed=$("divFixed"); if(fixed) fixed.classList.toggle("hidden", DIVS.length>=2);
+  sel.onchange=async()=>{ const want=sel.value; if(!(await switchDivision(want))) sel.value=state.div; };
+}
+/* everything in the chrome that depends on the division: labels, the role chip
+   (role here, not globally), and whether this user gets the Maker side */
+function syncDivisionChrome(){
+  const info=divInfo(state.div);
+  document.title="Community-DB — "+info.label;
+  const sel=$("divSel"); if(sel) sel.value=state.div;
+  const fixed=$("divFixed"); if(fixed) fixed.textContent=info.label;
+  const roleHere = state.role==="admin" ? "admin" : (isEditor() ? "editor" : "viewer");
+  const tip = state.role==="editor" && !isEditor() ? ` title="Editor in ${esc((state.divs||[]).map(k=>divInfo(k).label).join(", ")||"no divisions")} — view-only here"` : "";
+  $("userChip").innerHTML=esc(state.email||"")+` <span class="role-tag"${tip}>${esc(roleHere)}</span>`;
+  const mt=$("modeToggle");
+  if(isEditor()) mt.classList.remove("hidden");
+  else { mt.classList.add("hidden"); state.mode="view";
+    mt.querySelectorAll(".mode").forEach(x=>x.classList.toggle("on",x.dataset.mode==="view"));
+    if(state.view==="gaps"||state.view==="template"){ state.view="browse"; setTab(); } }
+  syncEditorTabs();
+}
+let divBusy=false;
+async function switchDivision(div){
+  if(div===state.div || divBusy || !DIVS.some(d=>d.key===div)) return false;
+  if(state.tpl && tplDirty() && !(await uiConfirm("You have unsaved template changes for "+divInfo(state.div).label+". Switch divisions and discard them?",
+      {title:"Unsaved template",okText:"Discard and switch",danger:true}))) return false;
+  divBusy=true;
+  try{
+    state.div=div; try{ localStorage.setItem("cdb_div",div); }catch(e){}
+    state.tpl=null; state.tplNew={}; state.sel=null; state.q=""; state.encCompare=false;
+    syncDivisionChrome(); pubqLoad();
+    const a=$("viewArea"); if(a) a.innerHTML=`<div class="empty" style="padding:28px">Loading ${esc(divInfo(div).label)}…</div>`;
+    await loadTemplate(); await loadAll(); render(); refreshWhatsNewBadge();
+  } finally { divBusy=false; }
+  return true;
 }
 window.addEventListener("beforeunload", e=>{ if(state.tpl && tplDirty()){ e.preventDefault(); e.returnValue=""; } });
 function wireChrome(){
@@ -305,7 +397,7 @@ async function loadAll(){
   state.items=[]; state.notes=[]; state.imgs={}; state.imgUrls={};   // signed URLs last 1h — re-sign every load
   if(DEMO||!sb) return;
   try{
-    const { data:cis } = await sb.from("cdb_cis").select("*");
+    const { data:cis } = await sb.from("cdb_cis").select("*").eq("division", state.div);
     const byComm=new Map();
     (cis||[]).forEach(r=>{ let e=byComm.get(r.community_id);
       if(!e){ e={ community_id:r.community_id, pub:null, draft:null }; byComm.set(r.community_id,e); }
@@ -320,15 +412,20 @@ async function loadAll(){
         hasPub:!!e.pub, hasDraft:!!e.draft };
     }).filter(it=> it.pub || it.draft ).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
 
-    const { data:imgs } = await sb.from("cdb_images").select("*").order("sort_order");
-    (imgs||[]).forEach(im=>{ (state.imgs[im.community_id]=state.imgs[im.community_id]||[]).push(im); });
-    await signImages(imgs||[]);
+    // images carry no division — keep only this division's communities
+    const ids=new Set(state.items.map(it=>it.id));
+    const { data:imgs0 } = await sb.from("cdb_images").select("*").order("sort_order");
+    const imgs=(imgs0||[]).filter(im=>ids.has(im.community_id));
+    imgs.forEach(im=>{ (state.imgs[im.community_id]=state.imgs[im.community_id]||[]).push(im); });
+    await signImages(imgs);
   }catch(e){ console.error(e); }
   // recent publish history (drives the What's New feed + unread row dots)
   try{
     const since=new Date(Date.now()-90*864e5).toISOString();
-    const { data:log } = await sb.from("cdb_change_log").select("*").gte("at",since).order("at",{ascending:false}).limit(300);
-    state.changeLog=log||[];
+    const { data:log } = await sb.from("cdb_change_log").select("*").gte("at",since).order("at",{ascending:false}).limit(600);
+    // the log has no division column — scope it to the communities loaded above
+    const ids=new Set(state.items.map(it=>it.id));
+    state.changeLog=(log||[]).filter(r=>ids.has(r.community_id)).slice(0,300);
   }catch(e){ state.changeLog=[]; }
 }
 async function signImages(imgs){
@@ -1119,7 +1216,7 @@ function exportCISpdf(id, opts){
   const M=40; const navy=[31,56,100], blue=[46,92,138], grey=[244,246,250];
   doc.setFont("helvetica","bold").setFontSize(15).text(String(row.name||"CIS"),M,46);
   doc.setFont("helvetica","normal").setFontSize(9).setTextColor(120)
-     .text("Community Information Sheet"+(row.status?" — "+row.status:""),M,60); doc.setTextColor(0);
+     .text("Community Information Sheet — "+divInfo(state.div).label+(row.status?" — "+row.status:""),M,60); doc.setTextColor(0);
   let y=76;
   const sectionTable=(title, body, opts)=>{ opts=opts||{};
     doc.autoTable(Object.assign({ startY:y,
@@ -1305,7 +1402,7 @@ function exportClusterPDF(grp){
    refresh (or a sign-out mid-batch) doesn't lose the list. Editors only —
    viewers never publish, so they never see the panel. */
 const PUBQ_MAX=200;
-function pubqKey(){ return "cdb_pubq:"+lc(state.email||"anon"); }
+function pubqKey(){ return divKey("cdb_pubq:"+lc(state.email||"anon")); }
 function pubqLoad(){
   try{ const a=JSON.parse(localStorage.getItem(pubqKey())||"[]");
     state.pubq = Array.isArray(a) ? a.filter(e=>e&&e.id).slice(0,PUBQ_MAX) : []; }
@@ -1484,7 +1581,7 @@ function commUnseen(id){
 }
 function refreshWhatsNewBadge(){
   const btn=$("whatsNewBtn"); if(!btn) return;
-  let seen=null; try{ seen=localStorage.getItem("cdb_wn_seen"); }catch(e){}
+  let seen=null; try{ seen=localStorage.getItem(divKey("cdb_wn_seen")); }catch(e){}
   const latest=(state.changeLog[0]&&state.changeLog[0].at)||null;
   const unseen=!!(latest && (!seen || latest>seen));
   btn.classList.toggle("has-updates",unseen);
@@ -1516,7 +1613,7 @@ function openWhatsNew(){
   }).join("") : `<div class="empty" style="padding:22px">Nothing yet — new CIS publishes, added plans and detail changes will show up here.</div>`;
   const scrim=document.createElement("div"); scrim.className="modal-scrim";
   const card=document.createElement("div"); card.className="modal-card wn-card";
-  card.innerHTML=`<div class="modal-h">What's New — recent CIS updates<button class="wn-x" aria-label="Close">&times;</button></div>
+  card.innerHTML=`<div class="modal-h">What's New — ${esc(divInfo(state.div).label)}<button class="wn-x" aria-label="Close">&times;</button></div>
     <div class="modal-b wn-body"><div class="wn-list">${items}</div></div>`;
   scrim.appendChild(card); document.body.appendChild(scrim);
   const close=()=>{ document.removeEventListener("keydown",onKey); scrim.remove(); };
@@ -1527,7 +1624,7 @@ function openWhatsNew(){
   card.querySelectorAll(".wn-toggle:not(.nodetail)").forEach(b=>b.onclick=()=>{ const d=card.querySelector(`[data-d="${b.dataset.i}"]`); if(d){ d.classList.toggle("hidden"); b.classList.toggle("open"); } });
   card.querySelectorAll(".wn-open").forEach(a=>a.onclick=e=>{ e.preventDefault(); const id=a.dataset.open; close();
     showDash(); state.view="browse"; setTab(); render(); if(itemById(id)) openDetail(id); });
-  const latest=rows[0]&&rows[0].at; if(latest){ try{ localStorage.setItem("cdb_wn_seen",latest); }catch(e){} }
+  const latest=rows[0]&&rows[0].at; if(latest){ try{ localStorage.setItem(divKey("cdb_wn_seen"),latest); }catch(e){} }
   refreshWhatsNewBadge();
 }
 
@@ -1547,7 +1644,8 @@ async function ensureDraft(id){   // null = couldn't get one; callers must bail
 async function saveDraft(row){
   row.status="draft"; row.updated_at=new Date().toISOString(); row.updated_by=state.email;
   if(!row.id) row.id=uid();
-  const payload={ id:row.id, community_id:row.community_id, division:"orlando", status:"draft",
+  if(!row.division) row.division=state.div;
+  const payload={ id:row.id, community_id:row.community_id, division:row.division, status:"draft",
     name:row.name||null, jde:row.jde||null, project_name:row.project_name||null, hub:row.hub||null,
     source:row.source||"manual", model_start:row.model_start||null, needs_review:!!row.needs_review,
     data:row.data||{}, updated_at:row.updated_at, updated_by:row.updated_by };
@@ -1835,7 +1933,7 @@ const tplWhen = t => t ? new Date(t).toLocaleString([], {month:"short",day:"nume
 function renderTemplate(a){
   const T=tplWork();
   a.innerHTML=`
-    <div class="note"><b>Template</b> sets the sections, rows and columns every community sheet uses. Type straight into any heading or row label to rename it.
+    <div class="note"><b>Template — ${esc(divInfo(state.div).label)}</b> sets the sections, rows and columns every ${esc(divInfo(state.div).label)} community sheet uses (each division has its own). Type straight into any heading or row label to rename it.
       Changes go live for everyone when you press <b>Save template</b>. Removing a row or column never deletes data: it disappears only from sheets where it's empty.</div>
     <div class="bar" id="tplBar"></div>
     <div class="tpl-list" id="tplList">
@@ -2178,7 +2276,7 @@ async function tplSave(){
   state.tplBusy=true; tplRepaint();
   try{
     // someone else saved since this copy was loaded? don't silently overwrite them
-    const { data:cur, error:e0 }=await sb.from("cdb_template").select("updated_at,updated_by").eq("id",TPL_ID).maybeSingle();
+    const { data:cur, error:e0 }=await sb.from("cdb_template").select("updated_at,updated_by").eq("id",tplId()).maybeSingle();
     if(e0) throw e0;
     const theirs=cur?cur.updated_at:null, mine=(state.tplMeta&&state.tplMeta.updated_at)||null;
     if(theirs && theirs!==mine){
@@ -2187,9 +2285,9 @@ async function tplSave(){
     }
     const clean=normTemplate(T); const now=new Date().toISOString();
     const { data:saved, error }=await sb.from("cdb_template")
-      .upsert({ id:TPL_ID, sections:clean, updated_at:now, updated_by:state.email },{onConflict:"id"}).select().maybeSingle();
+      .upsert({ id:tplId(), sections:clean, updated_at:now, updated_by:state.email },{onConflict:"id"}).select().maybeSingle();
     if(error) throw error;
-    const { error:e2 }=await sb.from("cdb_template_revisions").insert({ template_id:TPL_ID, sections:clean, saved_at:now, saved_by:state.email });
+    const { error:e2 }=await sb.from("cdb_template_revisions").insert({ template_id:tplId(), sections:clean, saved_at:now, saved_by:state.email });
     if(e2) console.warn("template revision insert failed",e2);
     SCHEMA.SECTIONS=clean; state.tpl=null; state.tplNew={};
     state.tplMeta={ updated_at:(saved&&saved.updated_at)||now, updated_by:state.email, saved:true };
@@ -2299,12 +2397,38 @@ function drawUsers(){
   const q=lc(($("userSearch")&&$("userSearch").value)||"");
   const rows=q ? state.users.filter(u=>lc(u.email).includes(q)||lc(u.role).includes(q)) : state.users;
   const cnt=$("userCount"); if(cnt) cnt.textContent=`${rows.length}${q?" of "+state.users.length:""}`;
+  // divisions only matter for editors (admins edit everything, viewers nothing).
+  // Hidden until the migration adds the column — list rows then carry `divisions`.
+  const scoped = rows.some(r=>"divisions" in r) || state.users.some(r=>"divisions" in r);
+  const divCell = r => {
+    if(!scoped) return "";
+    if(r.role!=="editor") return `<td class="tiny">${r.role==="admin"?"all divisions":"—"}</td>`;
+    const have=Array.isArray(r.divisions)?r.divisions:[];
+    return `<td class="divpick">${DIVS.map(d=>`<label><input type="checkbox" data-divu="${esc(r.email)}" value="${esc(d.key)}"${have.includes(d.key)?" checked":""}> ${esc(d.label.replace(/ Division$/,""))}</label>`).join("")}${have.length?"":` <span class="pill draft" title="An editor with no divisions can't edit anything">none</span>`}</td>`;
+  };
   list.innerHTML = rows.length
-    ? `<table class="perms-t"><tr><th>Email</th><th>Role</th><th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
+    ? `<table class="perms-t"><tr><th>Email</th><th>Role</th>${scoped?"<th>Edits</th>":""}<th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
         <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
+        ${divCell(r)}
         <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")}</table>`
     : `<div class="empty">${q?"No users match your search.":"No users."}</div>`;
-  list.querySelectorAll("[data-role]").forEach(s=>s.onchange=async()=>{ await sb.from("cdb_app_roles").upsert({email:s.dataset.role,role:s.value},{onConflict:"email"}); const u=state.users.find(x=>x.email===s.dataset.role); if(u) u.role=s.value; });
+  const saveRole=async(email, patch)=>{
+    const u=state.users.find(x=>x.email===email)||{email};
+    const row={ email, role:patch.role||u.role||"viewer" };
+    if(scoped) row.divisions = patch.divisions || (Array.isArray(u.divisions)?u.divisions:[]);
+    const { error }=await sb.from("cdb_app_roles").upsert(row,{onConflict:"email"});
+    if(error){ uiAlert("Couldn't save: "+error.message,"Users & roles"); await renderPerms(); return; }
+    Object.assign(u,row); drawUsers();
+  };
+  list.querySelectorAll("[data-role]").forEach(s=>s.onchange=()=>{
+    const email=s.dataset.role, u=state.users.find(x=>x.email===email)||{};
+    // a new editor starts on the division the admin is looking at
+    const divs = s.value==="editor" && !(Array.isArray(u.divisions)&&u.divisions.length) ? [state.div] : undefined;
+    saveRole(email,{ role:s.value, divisions:divs }); });
+  list.querySelectorAll("[data-divu]").forEach(c=>c.onchange=()=>{
+    const email=c.dataset.divu;
+    const divs=[...list.querySelectorAll(`[data-divu="${CSS.escape(email)}"]`)].filter(x=>x.checked).map(x=>x.value);
+    saveRole(email,{ divisions:divs }); });
   list.querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=async()=>{ if(await uiConfirm("Remove "+b.dataset.rmuser+"'s role? They become a viewer.",{title:"Remove role",okText:"Remove",danger:true})){ await sb.from("cdb_app_roles").delete().eq("email",b.dataset.rmuser); await renderPerms(); } });
 }
 

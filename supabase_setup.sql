@@ -6,6 +6,10 @@
    Run this whole file once in Supabase > SQL Editor. It is idempotent —
    safe to re-run after edits.
 
+   !! Divisions: after running this file, ALSO re-run add_divisions.sql. This
+   file still carries the older division-blind policies/RPC guards, and
+   add_divisions.sql replaces them with the per-division ones.
+
    Roles:
      viewer  – any signed-in @lennar.com user; sees only PUBLISHED community info
      editor  – may create/edit drafts, publish, and edit published sheets

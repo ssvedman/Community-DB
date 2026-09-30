@@ -19,7 +19,14 @@ window.APP_CONFIG = {
   BLUEPRINT_URL: "https://ssvedman.github.io/Blueprint/",
 
   ALLOWED_DOMAIN: "@lennar.com",
+  // Default division (first load, and the fallback if a remembered pick is gone).
   DIVISION: { key: "orlando", label: "Orlando Division", code: "OLH" },
+  // Every division the switcher offers. Keys match cdb_cis.division, the
+  // cdb_template id and the entries in cdb_app_roles.divisions.
+  DIVISIONS: [
+    { key: "orlando", label: "Orlando Division", code: "OLH" },
+    { key: "tampa",   label: "Tampa Division",   code: "TPU" }
+  ],
 
   ROLES: { "stephen.svedman@lennar.com": { role: "admin" } },
   DEFAULT_ROLE: "viewer",
@@ -108,6 +115,91 @@ window.CIS = {
     ]},
     { id:"deck", title:"Site & Model Park (Deck)", kind:"kv", fields:[] },   // populated via data.extra.deck (CIS Portal / Deck merge)
     { id:"note", title:"Notes (Special Circumstances)", kind:"note" }
+  ]
+};
+
+/* ------------------------------------------------------------------
+   Per-division default templates. A division not listed here starts from the
+   Orlando SECTIONS above. Same rules apply: once an admin saves that
+   division's template, cdb_template (id = division key) wins.
+
+   TAMPA mirrors the Tampa "A - CIS - Community Name - GA" workbook:
+   Land Acq and Dev / Sales / Forward Planning / Entitlements / Land
+   Development / sign-off block. Where a Tampa line means the same thing as an
+   Orlando one it reuses the Orlando key (community_name, jde, municipality,
+   city_state_zip, power_provider, water_meter), so the Community Map and
+   Blueprint pick those values up for Tampa without any change on their side.
+   ------------------------------------------------------------------ */
+window.CIS.DIVISION_SECTIONS = {
+  tampa: [
+    { id:"lad", title:"Land Acq and Dev", kind:"kv", fields:[
+      { k:"community_name",     label:"Community Name" },
+      { k:"jde",                label:"Community Number" },
+      { k:"homesite_count",     label:"Homesite Count" },
+      { k:"city_state_zip",     label:"City / Zip Code" },
+      { k:"municipality",       label:"Municipality" },
+      { k:"coordinates",        label:"Coordinates" },
+      { k:"spec_level",         label:"Spec Level" },
+      { k:"internet",           label:"Internet" },
+      { k:"power_provider",     label:"Power Company" },
+      { k:"water_meter",        label:"Water / Sewer" },
+      { k:"wind_speed",         label:"Wind Speed / Exposure" },
+      { k:"hurricane_shutters", label:"Hurricane Shutters Req?" },
+      { k:"rev_date",           label:"Revision Date", readonly:true }
+    ]},
+    { id:"sales", title:"Sales", kind:"kv", fields:[
+      { k:"model_hs",            label:"Model HS" },
+      { k:"parking_hs",          label:"Parking HS" },
+      { k:"community_standards", label:"Community Standards" }
+    ]},
+    { id:"plans", title:"Plan / Elev Lineup", kind:"plans",
+      columns:["Plan Number","Plan Name","Elevations"] },
+    { id:"fp", title:"Forward Planning", kind:"kv", fields:[
+      { k:"color_scheme",     label:"Color Scheme" },
+      { k:"stone_color",      label:"Stone Color" },
+      { k:"driveways",        label:"Driveways (Paver/Concrete)" },
+      { k:"driveway_widths",  label:"Driveway width requirements?" },
+      { k:"paver_apron",      label:"If paver, concrete apron required?" },
+      { k:"roof_spec",        label:"Roof Type & Spec" },
+      { k:"soffit_size",      label:"Required 12\" (typ) or 16\" soffit?" },
+      { k:"fascia_size",      label:"Required 4\" (typ) or 6\" fascia?" },
+      { k:"sod_req",          label:"Sod Requirements" },
+      { k:"coach_lighting",   label:"Coach Lighting?" }
+    ]},
+    { id:"ent", title:"Entitlements", kind:"kv", fields:[
+      { k:"foundation_type",   label:"Foundations (Mono or Stemwall)" },
+      { k:"design_guidelines", label:"Design Guidelines" },
+      { k:"special_req",       label:"Special Requirements" },
+      { k:"arc_plan",          label:"ARC Plan Approval" },
+      { k:"arc_color",         label:"ARC Color Approval" },
+      { k:"arc_landscape",     label:"ARC Landscape Approval" },
+      { k:"lot_fit",           label:"Lot Fit Issues" },
+      { k:"fence",             label:"Fence (Style, color, etc.)" },
+      { k:"banding_limits",    label:"Banding Limitations (Min/Max SF)" },
+      { k:"monotony",          label:"Monotony Standards" },
+      { k:"gutters_req",       label:"Gutters required?" },
+      { k:"stucco_finish",     label:"Stucco finish requirements?" },
+      { k:"decorative_trim",   label:"Decorative Trim/Accent requirements?" },
+      { k:"corner_hs",         label:"Corner homesite requirements?" },
+      { k:"lal_street_trees",  label:"LAL Requirements for Street Trees?" },
+      { k:"lal_lot_trees",     label:"LAL Requirements for Lot Trees?" },
+      { k:"cbu",               label:"CBU (Homebuilding, Land, or Developer?)" },
+      { k:"raised_entry",      label:"Raised Entry Requirements" },
+      { k:"raising_porches",   label:"If yes, are we raising porches?" }
+    ]},
+    { id:"ld", title:"Land Development", kind:"kv", fields:[
+      { k:"potable_meter",   label:"Potable Meter (Individual or Master Meter)" },
+      { k:"sub_meters",      label:"If Master, will there be sub-meters?" },
+      { k:"electric_meter",  label:"Electric Meter (Individual or Banked)" },
+      { k:"irrigation",      label:"Irrigation (Potable, Reclaim, Well)" },
+      { k:"reclaim_provider",label:"If Reclaim, who is the provider?" },
+      { k:"well_mainline",   label:"If Well, Mainline by who?" },
+      { k:"gas",             label:"Gas (If yes, please send agreement to Forward Planning)" }
+    ]},
+    { id:"signoff", title:"Sign-Off", kind:"grid", key:"signoff", rowHeader:"Department",
+      rowLabels:["Land Development","Construction","Sales","Sales Admin","Purchasing","Division President"],
+      columns:["Signature","Date"] },
+    { id:"note", title:"Notes", kind:"note" }
   ]
 };
 
