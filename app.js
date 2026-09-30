@@ -2410,7 +2410,7 @@ function drawUsers(){
     ? `<table class="perms-t"><tr><th>Email</th><th>Role</th>${scoped?"<th>Edits</th>":""}<th></th></tr>${rows.map(r=>`<tr><td>${esc(r.email)}</td>
         <td><select data-role="${esc(r.email)}"><option value="viewer"${r.role==="viewer"?" selected":""}>viewer</option><option value="editor"${r.role==="editor"?" selected":""}>editor</option><option value="admin"${r.role==="admin"?" selected":""}>admin</option></select></td>
         ${divCell(r)}
-        <td><button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button></td></tr>`).join("")}</table>`
+        <td>${r.explicit===false?`<span class="tiny" title="No role row — default viewer access">default</span>`:`<button class="rowdel" data-rmuser="${esc(r.email)}">Remove</button>`}</td></tr>`).join("")}</table>`
     : `<div class="empty">${q?"No users match your search.":"No users."}</div>`;
   const saveRole=async(email, patch)=>{
     const u=state.users.find(x=>x.email===email)||{email};
@@ -2418,7 +2418,7 @@ function drawUsers(){
     if(scoped) row.divisions = patch.divisions || (Array.isArray(u.divisions)?u.divisions:[]);
     const { error }=await sb.from("cdb_app_roles").upsert(row,{onConflict:"email"});
     if(error){ uiAlert("Couldn't save: "+error.message,"Users & roles"); await renderPerms(); return; }
-    Object.assign(u,row); drawUsers();
+    Object.assign(u,row,{explicit:true}); drawUsers();
   };
   list.querySelectorAll("[data-role]").forEach(s=>s.onchange=()=>{
     const email=s.dataset.role, u=state.users.find(x=>x.email===email)||{};
